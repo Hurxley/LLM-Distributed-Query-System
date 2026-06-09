@@ -1,0 +1,53 @@
+name: Test & Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r coordinator/requirements.txt
+          pip install -r engine/requirements.txt
+          pip install pytest
+
+      - name: Run unit tests
+        run: pytest tests/ -v --tb=short
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build coordinator image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./coordinator
+          push: false
+          load: false
+
+      - name: Build engine image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./engine
+          push: false
+          load: false

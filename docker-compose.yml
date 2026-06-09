@@ -1,0 +1,124 @@
+version: "3.8"
+services:
+  db_a:
+    image: mysql:8.0
+    container_name: db_a
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: talent
+    volumes:
+      - ./init/db_a.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - federated-net
+
+  db_b:
+    image: postgres:15
+    container_name: db_b
+    environment:
+      POSTGRES_DB: overseas
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-pw}
+    volumes:
+      - ./init/db_b.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - federated-net
+
+  coordinator:
+    build: ./coordinator
+    container_name: coordinator
+    ports:
+      - "8000:8000"
+    environment:
+      WORKER_URLS: http://worker_a:8001,http://worker_b:8002,http://worker_c:8003
+      LLM_API_BASE: ${LLM_API_BASE:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      API_TOKEN: ${API_TOKEN:-}
+    networks:
+      - federated-net
+
+  worker_a:
+    build: ./engine
+    container_name: worker_a
+    ports:
+      - "8001:8001"
+    environment:
+      SALT: ${SALT}
+      COORDINATOR_URL: http://coordinator:8000
+      MAPPING_FILE: /etc/engine/mapping.yaml
+      WORKER_PORT: "8001"
+      DB_TYPE: mysql
+      DB_HOST: db_a
+      DB_PORT: "3306"
+      DB_NAME: talent
+      DB_USER: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    volumes:
+      - ./engines/worker_a/mapping.yaml:/etc/engine/mapping.yaml:ro
+    depends_on:
+      db_a:
+        condition: service_healthy
+      coordinator:
+        condition: service_started
+    networks:
+      - federated-net
+
+  worker_b:
+    build: ./engine
+    container_name: worker_b
+    ports:
+      - "8002:8002"
+    environment:
+      SALT: ${SALT}
+      COORDINATOR_URL: http://coordinator:8000
+      MAPPING_FILE: /etc/engine/mapping.yaml
+      WORKER_PORT: "8002"
+      DB_TYPE: postgresql
+      DB_HOST: db_b
+      DB_PORT: "5432"
+      DB_NAME: overseas
+      DB_USER: postgres
+      DB_PASSWORD: ${PG_PASSWORD:-pw}
+    volumes:
+      - ./engines/worker_b/mapping.yaml:/etc/engine/mapping.yaml:ro
+    depends_on:
+      db_b:
+        condition: service_healthy
+      coordinator:
+        condition: service_started
+    networks:
+      - federated-net
+
+  worker_c:
+    build: ./engine
+    container_name: worker_c
+    ports:
+      - "8003:8003"
+    environment:
+      SALT: ${SALT}
+      COORDINATOR_URL: http://coordinator:8000
+      MAPPING_FILE: /etc/engine/mapping.yaml
+      WORKER_PORT: "8003"
+      DB_TYPE: sqlite
+      DB_PATH: /data/salary.db
+    volumes:
+      - ./engines/worker_c/mapping.yaml:/etc/engine/mapping.yaml:ro
+      - ./data/salary.db:/data/salary.db:ro
+    depends_on:
+      coordinator:
+        condition: service_started
+    networks:
+      - federated-net
+
+networks:
+  federated-net:
+    driver: bridge

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>跨源安全统计原型系统</title>
+<link rel="stylesheet" href="/static/style.css?v=9">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ═══ Header ═══ -->
+  <header>
+    <div class="header-glow"></div>
+    <div class="header-content">
+      <h1>跨源安全统计原型系统</h1>
+    </div>
+  </header>
+
+  <!-- ═══ Global Schema ═══ -->
+  <section class="card schema-card">
+    <div class="card-header" onclick="toggleSchema()">
+      <h2><span class="dot"></span> 全局数据视图</h2>
+      <span class="toggle-icon" id="schema-toggle">▾</span>
+    </div>
+    <div class="card-body" id="schema-content">
+      <div id="schema-view"><span class="muted">等待 Worker 注册...</span></div>
+      <button class="btn-ghost" onclick="loadSchema()">⟳ 刷新</button>
+    </div>
+  </section>
+
+  <!-- ═══ Query Input ═══ -->
+  <section class="card query-card">
+    <h2><span class="dot"></span> 查询输入</h2>
+    <div class="card-body">
+      <div class="query-input-row">
+        <input type="text" id="query-input" placeholder="输入中文查询需求，如：物联网方向、有海外经历且获省级以上奖励的高校教授的平均月收入" onkeydown="if(event.key==='Enter')submitQuery()">
+        <button class="btn-primary" onclick="submitQuery()" id="submit-btn">解析查询</button>
+      </div>
+      <div class="preset-queries">
+        <div class="preset-group"><span class="preset-label">基础</span>
+          <button onclick="loadPreset('Q1')">物联网教授海外省级奖平均收入</button>
+          <button onclick="loadPreset('Q6')">高校女性副教授平均月收入</button>
+          <button onclick="loadPreset('Q9')">物联网方向月收入最低值</button></div>
+        <div class="preset-group"><span class="preset-label">多维</span>
+          <button onclick="loadPreset('Q2')">AI方向40岁以下副教授年终奖</button>
+          <button onclick="loadPreset('Q4')">新材料美德留学教授最高月收入</button>
+          <button onclick="loadPreset('Q7')">生物医药35岁以下海外人数</button></div>
+        <div class="preset-group"><span class="preset-label">时间</span>
+          <button onclick="loadPreset('Q5')">国家级奖科研近三年总补贴</button>
+          <button onclick="loadPreset('Q10')">海外获奖2024年总工资支出</button></div>
+        <div class="preset-group"><span class="preset-label">聚合</span>
+          <button onclick="loadPreset('Q3')">海外经历女性研究人员人数</button>
+          <button onclick="loadPreset('Q8')">企业工程师及以上平均年终奖</button></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Results Area ═══ -->
+  <div id="results-area" style="display:none;">
+
+    <!-- Parse + Plans two-column -->
+    <div class="two-col">
+      <!-- Parse Result -->
+      <section class="card" id="parse-section">
+        <h2><span class="dot"></span> 解析结果 <span class="subtitle-sm" id="parse-method"></span></h2>
+        <div class="card-body" id="parse-result"></div>
+        <div class="card-body" id="parse-sql" style="display:none;"></div>
+      </section>
+
+      <!-- Plan Comparison -->
+      <section class="card" id="plans-section">
+        <div class="card-header-bar">
+          <h2><span class="dot"></span> 方案对比</h2>
+          <span class="badge" id="plan-count"></span>
+        </div>
+        <div class="card-body" id="plan-list"></div>
+        <div class="plan-actions-bar" id="plan-actions"></div>
+      </section>
+    </div>
+
+    <!-- ═══ Atomic Operation Breakdown (dedicated module) ═══ -->
+    <section class="card" id="atomic-section" style="display:none;">
+      <h2><span class="dot"></span> ⏱ 原子操作耗时分解 <span class="subtitle-sm" id="atomic-plan-name"></span></h2>
+      <div class="card-body" id="atomic-breakdown"></div>
+    </section>
+
+    <!-- Execution Status -->
+    <section class="card" id="status-section" style="display:none;">
+      <h2><span class="dot pulse"></span> 实时执行状态</h2>
+      <div class="card-body">
+        <div class="progress-track"><div class="progress-fill" id="progress-bar"></div></div>
+        <div id="stage-cards"></div>
+        <div class="timeline" id="event-timeline"></div>
+      </div>
+    </section>
+
+    <!-- Final Result -->
+    <section class="card" id="result-section" style="display:none;">
+      <h2><span class="dot"></span> 查询结果</h2>
+      <div class="card-body" id="final-result"></div>
+    </section>
+
+  </div>
+
+</div>
+
+<script src="/static/render.js?v=9"></script>
+<script src="/static/ws.js?v=9"></script>
+<script src="/static/app.js?v=9"></script>
+</body>
+</html>
