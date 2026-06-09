@@ -10,8 +10,11 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Prevent MSYS/Git Bash from mangling Docker paths (e.g. /etc/engine/ -> D:/dependent/Git/etc/engine/)
+# Prevent MSYS/Git Bash from mangling Docker paths
+# MSYS_NO_PATHCONV prevents conversion of POSIX-like paths (e.g. /etc/engine/ -> D:/dependent/Git/...)
+# MSYS2_ARG_CONV_EXCL prevents conversion inside docker's argument parsing
 export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL="*"
 
 # Clean up any previous failed containers
 echo "[0/6] 清理旧容器..."
@@ -30,7 +33,7 @@ echo "  数据生成完成。"
 
 # 3. Start all containers
 echo "[3/6] 启动 Docker 容器..."
-docker compose up -d --build 2>/dev/null || docker-compose up -d --build
+MSYS_NO_PATHCONV=1 docker compose up -d --build || MSYS_NO_PATHCONV=1 docker-compose up -d --build
 
 # 4. Wait for readiness
 echo "[4/6] 等待节点注册到主控..."
