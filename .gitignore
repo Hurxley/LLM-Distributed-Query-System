@@ -7,13 +7,10 @@ __pycache__/
 *.pyo
 .pytest_cache/
 
-# Generated databases
-data/*.db
+# Generated SQLite databases (committed — required for docker compose up)
 data/*.db-wal
 data/*.db-shm
 
-# Generated SQL init files
-init/
 
 # Claude internal
 .claude/

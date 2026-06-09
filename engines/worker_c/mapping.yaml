@@ -1,0 +1,30 @@
+worker_id: worker_c
+worker_name: 薪酬库 (SQLite)
+table: salary
+
+fields:
+  - logical: person_token
+    physical: id_card
+    secret: true
+    tokenize: hmac-sha256
+    alias: [人员, 人, 人员标识]
+
+  - logical: monthly_income
+    physical: monthly_income
+    alias: [月收入, 月工资, 收入, 工资]
+
+  - logical: annual_bonus
+    physical: annual_bonus
+    alias: [年终奖, 奖金, 年度奖金]
+
+  - logical: subsidy
+    physical: subsidy
+    alias: [补贴, 津贴, 补助]
+
+  - logical: pay_year
+    physical: pay_year
+    alias: [年份, 年度, 发放年份, 发放年度]
+
+  - logical: pay_month
+    physical: pay_month
+    alias: [月份, 发放月份]

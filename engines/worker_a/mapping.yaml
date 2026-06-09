@@ -1,0 +1,51 @@
+worker_id: worker_a
+worker_name: 人才库 (MySQL)
+table: talent
+
+fields:
+  - logical: person_token
+    physical: id_card
+    secret: true
+    tokenize: hmac-sha256
+    alias: [人员, 人, 人员标识]
+
+  - logical: gender
+    physical: gender_code
+    alias: [性别]
+    mapping:
+      M: 男
+      F: 女
+
+  - logical: age
+    physical: birth_year
+    derived: true
+    derive_expr: "YEAR(NOW()) - birth_year"
+    alias: [年龄, 岁数]
+
+  - logical: research_field
+    physical: field_code
+    alias: [研究方向, 研究领域, 方向, 领域]
+    mapping:
+      "01": 物联网
+      "02": 人工智能
+      "03": 新材料
+      "04": 生物医药
+      "05": 量子计算
+
+  - logical: title
+    physical: title_code
+    alias: [职称, 职位, 头衔]
+    mapping:
+      "11": 工程师
+      "12": 讲师
+      "13": 副教授
+      "14": 教授
+      "15": 研究员
+
+  - logical: org_type
+    physical: org_code
+    alias: [机构类型, 单位类型, 机构, 单位]
+    mapping:
+      U: 高校
+      R: 科研院所
+      E: 企业
