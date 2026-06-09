@@ -10,22 +10,30 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Prevent MSYS/Git Bash from mangling Docker paths (e.g. /etc/engine/ -> D:/dependent/Git/etc/engine/)
+export MSYS_NO_PATHCONV=1
+
+# Clean up any previous failed containers
+echo "[0/6] 清理旧容器..."
+docker compose down 2>/dev/null || true
+echo ""
+
 # 1. Generate random salt
-echo "[1/5] 生成安全盐..."
+echo "[1/6] 生成安全盐..."
 export SALT=$(python3 -c "import secrets; print(secrets.token_hex(32))" 2>/dev/null || python -c "import secrets; print(secrets.token_hex(32))")
 echo "  SALT=${SALT:0:16}... (已生成 32 字节随机盐)"
 
 # 2. Generate test data
-echo "[2/5] 生成测试数据..."
+echo "[2/6] 生成测试数据..."
 python3 scripts/gen_data.py 2>/dev/null || python scripts/gen_data.py
 echo "  数据生成完成。"
 
 # 3. Start all containers
-echo "[3/5] 启动 Docker 容器..."
+echo "[3/6] 启动 Docker 容器..."
 docker compose up -d --build 2>/dev/null || docker-compose up -d --build
 
 # 4. Wait for readiness
-echo "[4/5] 等待节点注册到主控..."
+echo "[4/6] 等待节点注册到主控..."
 for i in $(seq 1 30); do
     count=$(curl -s http://localhost:8000/api/schema 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('workers',{})))" 2>/dev/null || echo 0)
     if [ "$count" -ge 3 ]; then
@@ -37,7 +45,7 @@ for i in $(seq 1 30); do
 done
 
 # 5. Done
-echo "[5/5] 系统就绪！"
+echo "[5/6] 系统就绪！"
 echo ""
 echo "  =========================================="
 echo "   系统部署成功！"
