@@ -26,23 +26,6 @@ function formatMsNum(ms) {
     return isNaN(num) ? 0 : Math.round(num);
 }
 
-// ── Schema ──
-function renderSchema(data) {
-    var workers = data.workers || {};
-    var html = '';
-    for (var wid in workers) {
-        if (!workers.hasOwnProperty(wid)) continue;
-        var w = workers[wid];
-        var fieldNames = Object.keys(w.fields || {}).join(', ');
-        html += '<div class="worker-schema">' +
-            '<strong>' + escapeHtml(w.name) + '</strong>' +
-            '<div class="fields">' + escapeHtml(fieldNames || '暂无字段') + '</div>' +
-            '<span class="baseline">' + (w.row_count || 0).toLocaleString() + ' 行 · ' + (w.scan_ms || 0) + 'ms 全扫</span>' +
-        '</div>';
-    }
-    document.getElementById('schema-view').innerHTML = html || '<span class="muted">暂无注册节点 — 请等待 Worker 启动</span>';
-}
-
 // ── Parse Result ──
 function renderParseResult(ast) {
     if (!ast) return;

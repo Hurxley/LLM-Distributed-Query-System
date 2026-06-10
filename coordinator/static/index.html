@@ -21,24 +21,12 @@
     </div>
   </header>
 
-  <!-- ═══ Global Schema ═══ -->
-  <section class="card schema-card">
-    <div class="card-header" onclick="toggleSchema()">
-      <h2><span class="dot"></span> 全局数据视图</h2>
-      <span class="toggle-icon" id="schema-toggle">▾</span>
-    </div>
-    <div class="card-body" id="schema-content">
-      <div id="schema-view"><span class="muted">等待 Worker 注册...</span></div>
-      <button class="btn-ghost" onclick="loadSchema()">⟳ 刷新</button>
-    </div>
-  </section>
-
   <!-- ═══ Query Input ═══ -->
   <section class="card query-card">
     <h2><span class="dot"></span> 查询输入</h2>
     <div class="card-body">
       <div class="query-input-row">
-        <input type="text" id="query-input" placeholder="输入中文查询需求，如：物联网方向、有海外经历且获省级以上奖励的高校教授的平均月收入" onkeydown="if(event.key==='Enter')submitQuery()">
+        <input type="text" id="query-input" placeholder="输入中文自然语言查询..." onkeydown="if(event.key==='Enter')submitQuery()">
         <button class="btn-primary" onclick="submitQuery()" id="submit-btn">解析查询</button>
       </div>
       <div class="preset-queries">

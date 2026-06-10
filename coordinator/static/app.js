@@ -27,34 +27,8 @@ let ws = null;
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', function() {
-    loadSchema();
+    // ready
 });
-
-function toggleSchema() {
-    var el = document.getElementById('schema-content');
-    var toggle = document.getElementById('schema-toggle');
-    if (!el) return;
-    if (el.classList.contains('open')) {
-        el.classList.remove('open');
-        if (toggle) toggle.textContent = '▸';
-    } else {
-        el.classList.add('open');
-        if (toggle) toggle.textContent = '▾';
-    }
-}
-
-// ── Schema ──
-async function loadSchema() {
-    try {
-        var resp = await fetch('/api/schema');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        var data = await resp.json();
-        renderSchema(data);
-    } catch (e) {
-        document.getElementById('schema-view').innerHTML =
-            '<span style="color:var(--accent-red);">无法加载全局视图：' + escapeHtml(e.message) + '</span>';
-    }
-}
 
 // ── Preset ──
 function loadPreset(key) {
