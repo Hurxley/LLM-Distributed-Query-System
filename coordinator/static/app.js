@@ -3,19 +3,6 @@
 // ═══════════════════════════════════════════════════
 // Rendering functions live in render.js; WebSocket in ws.js.
 
-const PRESET_QUERIES = {
-    Q1: "物联网方向、有海外经历且获省级以上奖励的高校教授的平均月收入",
-    Q2: "人工智能方向、40岁以下的副教授的平均年终奖",
-    Q3: "有海外经历的女性研究人员的人数",
-    Q4: "新材料方向、有美国或德国留学经历的教授的最高月收入",
-    Q5: "获国家级奖励的科研院所人员近三年的总补贴金额",
-    Q6: "高校女性副教授的平均月收入",
-    Q7: "生物医药方向、35岁以下且有海外经历的人员数量",
-    Q8: "企业研发人员（工程师及以上）的平均年终奖",
-    Q9: "物联网方向人员的月收入最低值",
-    Q10: "有海外经历且获奖人员中2024年总工资支出",
-};
-
 const FUNC_LABELS = { avg: '平均', sum: '总', min: '最低', max: '最高', count: '人数' };
 
 let currentQueryId = null;
@@ -29,12 +16,6 @@ let ws = null;
 document.addEventListener('DOMContentLoaded', function() {
     // ready
 });
-
-// ── Preset ──
-function loadPreset(key) {
-    document.getElementById('query-input').value = PRESET_QUERIES[key] || '';
-    document.getElementById('query-input').focus();
-}
 
 // ── Submit Query ──
 async function submitQuery() {
