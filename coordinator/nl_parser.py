@@ -162,9 +162,9 @@ def anchor_and_validate(parsed: dict, global_schema) -> dict:
     if agg:
         agg_field = agg.get('field', '')
         agg_func = agg.get('func', 'avg')
-        # COUNT(person_token) can be done coordinator-side — no worker needed
+        # COUNT(person_token) is coordinator-side: data comes from the filter workers
         if agg_func == 'count' and agg_field == 'person_token':
-            agg_workers = []
+            agg_workers = list({w for f in routed_filters for w in f.get('workers', [])})
         else:
             agg_workers = global_schema.get_workers_for_field(agg_field)
         routed_agg = {
