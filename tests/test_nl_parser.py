@@ -37,12 +37,12 @@ def sample_schema():
         'baseline': {'row_count': 700, 'scan_latency_ms': 160},
         'fields': [
             {'logical': 'person_token', 'secret': True, 'tokenize': 'hmac-sha256', 'type': 'token'},
-            {'logical': 'has_overseas', 'alias': ['海外经历', '有海外经历'], 'type': 'enum',
+            {'logical': 'overseas_experience', 'alias': ['海外经历', '有海外经历'], 'type': 'enum',
              'mapping': {'false': 'false', 'true': 'true'}, 'values': ['false', 'true']},
-            {'logical': 'study_country', 'alias': ['留学国家'], 'type': 'enum',
+            {'logical': 'country_of_study', 'alias': ['留学国家'], 'type': 'enum',
              'mapping': {'美国': '美国', '英国': '英国', '德国': '德国', '日本': '日本', '澳大利亚': '澳大利亚', '无': '无'},
              'values': ['美国', '英国', '德国', '日本', '澳大利亚', '无']},
-            {'logical': 'max_award_level', 'alias': ['获奖级别'], 'type': 'enum',
+            {'logical': 'highest_award_level', 'alias': ['获奖级别'], 'type': 'enum',
              'mapping': {'无': '无', '市级': '市级', '省级': '省级', '国家级': '国家级'},
              'values': ['无', '市级', '省级', '国家级']},
         ],
@@ -53,9 +53,9 @@ def sample_schema():
         'baseline': {'row_count': 28800, 'scan_latency_ms': 500},
         'fields': [
             {'logical': 'person_token', 'secret': True, 'tokenize': 'hmac-sha256', 'type': 'token'},
-            {'logical': 'monthly_income', 'alias': ['月收入', '月工资', '收入'], 'type': 'numeric'},
-            {'logical': 'annual_bonus', 'alias': ['年终奖', '奖金'], 'type': 'numeric'},
-            {'logical': 'subsidy', 'alias': ['补贴', '津贴'], 'type': 'numeric'},
+            {'logical': 'monthly_salary', 'alias': ['月收入', '月工资', '收入'], 'type': 'numeric'},
+            {'logical': 'year_end_bonus', 'alias': ['年终奖', '奖金'], 'type': 'numeric'},
+            {'logical': 'allowance', 'alias': ['补贴', '津贴'], 'type': 'numeric'},
         ],
     })
     return schema
@@ -89,12 +89,12 @@ class TestRuleBasedParsing:
     def test_overseas_experience(self, sample_schema):
         result = parse_with_rules("有海外经历的教授", sample_schema)
         filters = result['filters']
-        assert any(f['field'] == 'has_overseas' and f['value'] == 'true' for f in filters)
+        assert any(f['field'] == 'overseas_experience' and f['value'] == 'true' for f in filters)
 
     def test_award_level(self, sample_schema):
         result = parse_with_rules("省级以上奖励的教授", sample_schema)
         filters = result['filters']
-        assert any(f['field'] == 'max_award_level' and f['op'] == 'gte' and f['value'] == '省级' for f in filters)
+        assert any(f['field'] == 'highest_award_level' and f['op'] == 'gte' and f['value'] == '省级' for f in filters)
 
     def test_age_filter(self, sample_schema):
         result = parse_with_rules("35岁以下的平均月收入", sample_schema)
@@ -104,13 +104,13 @@ class TestRuleBasedParsing:
     def test_year_filter(self, sample_schema):
         result = parse_with_rules("2024年的平均月收入", sample_schema)
         filters = result['filters']
-        assert any(f['field'] == 'pay_year' and f['value'] == '2024' for f in filters)
+        assert any(f['field'] == 'fiscal_year' and f['value'] == '2024' for f in filters)
 
     def test_multi_country_or(self, sample_schema):
         """美国或德国留学 should produce IN filter with both countries."""
         result = parse_with_rules("美国或德国留学的教授", sample_schema)
         filters = result['filters']
-        country_filter = next((f for f in filters if f['field'] == 'study_country'), None)
+        country_filter = next((f for f in filters if f['field'] == 'country_of_study'), None)
         assert country_filter is not None
         assert country_filter['op'] == 'in'
         assert '美国' in country_filter['value']
@@ -120,7 +120,7 @@ class TestRuleBasedParsing:
         """美国留学 should produce EQ filter."""
         result = parse_with_rules("美国留学的教授", sample_schema)
         filters = result['filters']
-        country_filter = next((f for f in filters if f['field'] == 'study_country'), None)
+        country_filter = next((f for f in filters if f['field'] == 'country_of_study'), None)
         assert country_filter is not None
         assert country_filter['op'] == 'eq'
         assert country_filter['value'] == '美国'
@@ -128,7 +128,7 @@ class TestRuleBasedParsing:
     def test_avg_aggregation(self, sample_schema):
         result = parse_with_rules("平均月收入", sample_schema)
         assert result['aggregation']['func'] == 'avg'
-        assert result['aggregation']['field'] == 'monthly_income'
+        assert result['aggregation']['field'] == 'monthly_salary'
 
     def test_max_aggregation(self, sample_schema):
         result = parse_with_rules("最高月收入", sample_schema)
@@ -141,12 +141,12 @@ class TestRuleBasedParsing:
     def test_sum_aggregation(self, sample_schema):
         result = parse_with_rules("总补贴金额", sample_schema)
         assert result['aggregation']['func'] == 'sum'
-        assert result['aggregation']['field'] == 'subsidy'
+        assert result['aggregation']['field'] == 'allowance'
 
     def test_annual_bonus_avg(self, sample_schema):
         result = parse_with_rules("平均年终奖", sample_schema)
         assert result['aggregation']['func'] == 'avg'
-        assert result['aggregation']['field'] == 'annual_bonus'
+        assert result['aggregation']['field'] == 'year_end_bonus'
 
     def test_no_filter_query(self, sample_schema):
         result = parse_with_rules("平均月收入", sample_schema)
@@ -159,7 +159,7 @@ class TestAnchorAndValidate:
     def test_field_routed_to_correct_workers(self, sample_schema):
         parsed = {
             'filters': [{'field': 'gender', 'op': 'eq', 'value': '女'}],
-            'aggregation': {'field': 'monthly_income', 'func': 'avg'},
+            'aggregation': {'field': 'monthly_salary', 'func': 'avg'},
         }
         routed = anchor_and_validate(parsed, sample_schema)
         assert 'worker_a' in routed['filters'][0]['workers']
@@ -185,7 +185,7 @@ class TestAnchorAndValidate:
     def test_validate_valid_query(self, sample_schema):
         routed = {
             'filters': [{'field': 'gender', 'op': 'eq', 'value': '女', 'workers': ['worker_a']}],
-            'aggregation': {'field': 'monthly_income', 'func': 'avg', 'workers': ['worker_c']},
+            'aggregation': {'field': 'monthly_salary', 'func': 'avg', 'workers': ['worker_c']},
         }
         is_valid, errors = validate_parsed_query(routed)
         assert is_valid
@@ -211,7 +211,7 @@ class TestAnchorAndValidate:
 
     def test_in_operator_list_value(self, sample_schema):
         parsed = {
-            'filters': [{'field': 'study_country', 'op': 'in', 'value': ['美国', '德国']}],
+            'filters': [{'field': 'country_of_study', 'op': 'in', 'value': ['美国', '德国']}],
             'aggregation': None,
         }
         routed = anchor_and_validate(parsed, sample_schema)
