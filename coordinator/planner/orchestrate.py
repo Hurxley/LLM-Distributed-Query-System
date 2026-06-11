@@ -36,10 +36,7 @@ async def generate_and_rank_plans(
     all_plans = _enumerate_all_plans(query_ast, workers_summary, precheck_counts)
     logger.info(f"Exhaustive enumeration: {len(all_plans)} candidate plans")
 
-    # Step 2b: Optimize COUNT(person_token) — can be coordinator-side, no DB needed
-    all_plans = [_optimize_coordinator_count(p, query_ast) for p in all_plans]
-
-    # Step 2c: Optionally supplement with LLM-generated plans
+    # Step 2b: Optionally supplement with LLM-generated plans
     api_base = os.environ.get('LLM_API_BASE', '')
     if api_base:
         try:
@@ -51,6 +48,10 @@ async def generate_and_rank_plans(
                            f"(had {before}, now {len(all_plans)})")
         except Exception as e:
             logger.warning(f"LLM generation failed, using exhaustive only: {e}")
+
+    # Step 2c: Optimize COUNT(person_token) — can be coordinator-side, no DB needed.
+    # Must run AFTER LLM merge so LLM-generated plans also get optimized.
+    all_plans = [_optimize_coordinator_count(p, query_ast) for p in all_plans]
 
     # Step 3: Compute costs for every plan
     for plan in all_plans:
