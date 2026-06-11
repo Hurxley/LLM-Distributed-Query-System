@@ -13,6 +13,42 @@ from .validation import _validate_and_repair_plan
 logger = logging.getLogger("planner.enumeration")
 
 
+def _optimize_coordinator_count(plan: dict, query_ast: dict) -> dict:
+    """Remove the aggregate stage when COUNT(person_token) — the coordinator
+    can count tokens directly without sending them to any worker."""
+    agg = query_ast.get('aggregation') or {}
+    if not (agg.get('func') == 'count' and agg.get('field') == 'person_token'):
+        return plan
+
+    stages = plan.get('stages', [])
+    # Find aggregate and compute stages
+    agg_stage = next((s for s in stages if s['type'] == 'aggregate'), None)
+    compute_stage = next((s for s in stages if s['type'] == 'compute'), None)
+    if not agg_stage or not compute_stage:
+        return plan
+
+    # Reroute: compute stage now directly depends on what aggregate depended on
+    compute_stage['depends_on'] = agg_stage.get('depends_on', [])
+    # R inherits agg_func / agg_field for display; mark as coordinator-side count
+    compute_stage['agg_func'] = agg.get('func')
+    compute_stage['agg_field'] = agg.get('field')
+    compute_stage['coordinator_count'] = True
+
+    # Remove aggregate stage
+    plan['stages'] = [s for s in stages if s['type'] != 'aggregate']
+    plan['name'] = plan.get('name', '').replace('聚合节点计算统计值', '主控直接计数')
+    plan['description'] = plan.get('description', '').replace(
+        '由聚合节点计算统计值', '由主控直接统计Token数量'
+    ).replace(
+        '聚合节点本地完成求交和统计', '聚合节点本地完成求交，主控直接统计数量'
+    ).replace(
+        '聚合节点计算统计值', '主控直接统计Token数量'
+    )
+
+    logger.info(f"Optimized plan {plan.get('id')}: coordinator-side COUNT, removed aggregate stage")
+    return plan
+
+
 def _enumerate_all_plans(query_ast: dict, workers_summary: dict, precheck_counts: dict) -> list[dict]:
     """Exhaustively enumerate ALL theoretically valid plan topologies.
 

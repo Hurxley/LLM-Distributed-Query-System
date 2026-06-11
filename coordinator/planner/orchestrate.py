@@ -7,6 +7,7 @@ import os
 
 from .precheck import run_precheck
 from .enumeration import _enumerate_all_plans
+from .enumeration import _optimize_coordinator_count
 from .generation import generate_plans_with_llm
 from .validation import _merge_plans
 from .cost_model import compute_cost, rank_plans
@@ -35,7 +36,10 @@ async def generate_and_rank_plans(
     all_plans = _enumerate_all_plans(query_ast, workers_summary, precheck_counts)
     logger.info(f"Exhaustive enumeration: {len(all_plans)} candidate plans")
 
-    # Step 2b: Optionally supplement with LLM-generated plans
+    # Step 2b: Optimize COUNT(person_token) — can be coordinator-side, no DB needed
+    all_plans = [_optimize_coordinator_count(p, query_ast) for p in all_plans]
+
+    # Step 2c: Optionally supplement with LLM-generated plans
     api_base = os.environ.get('LLM_API_BASE', '')
     if api_base:
         try:

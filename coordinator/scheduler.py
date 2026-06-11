@@ -122,7 +122,7 @@ class DAGScheduler:
             if 'sql' in result:
                 so = stage_objects.get(sid, {})
                 stage_sql[sid] = {
-                    'sql': result.get('display_sql', '') or result.get('sql', ''),
+                    'sql': (result.get('display_sql') or result.get('sql') or ''),
                     'location': so.get('location', ''),
                     'type': so.get('type', ''),
                 }
@@ -256,7 +256,7 @@ class DAGScheduler:
             if d in self.results:
                 all_tokens.extend(self.results[d].get('tokens', []))
 
-        agg_field = stage.get('agg_field', 'monthly_income')
+        agg_field = stage.get('agg_field', 'monthly_salary')
         agg_func = stage.get('agg_func', 'avg')
 
         logger.info(f"Scheduler _do_aggregate: sending {len(all_tokens)} tokens to {location}, field={agg_field}, func={agg_func}")
@@ -327,7 +327,7 @@ class DAGScheduler:
         else:
             final_value = total_sum
 
-        return {
+        result = {
             'sum': total_sum,
             'count': total_count,
             'min': total_min if total_min is not None else 0,
@@ -335,6 +335,11 @@ class DAGScheduler:
             'value': final_value,
             'func': agg_func,
         }
+
+        # Coordinator-side COUNT: show display SQL explaining the direct count
+        if stage.get('coordinator_count'):
+            result['display_sql'] = f"-- 主控直接计数：统计求交后的Token数量 = {total_count}"
+        return result
 
     def _summarize_result(self, result: dict) -> str:
         """Create a human-readable summary of a stage result."""
