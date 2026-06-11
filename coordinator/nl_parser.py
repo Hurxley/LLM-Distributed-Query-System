@@ -161,10 +161,15 @@ def anchor_and_validate(parsed: dict, global_schema) -> dict:
     routed_agg = None
     if agg:
         agg_field = agg.get('field', '')
-        agg_workers = global_schema.get_workers_for_field(agg_field)
+        agg_func = agg.get('func', 'avg')
+        # COUNT(person_token) can be done coordinator-side — no worker needed
+        if agg_func == 'count' and agg_field == 'person_token':
+            agg_workers = []
+        else:
+            agg_workers = global_schema.get_workers_for_field(agg_field)
         routed_agg = {
             'field': agg_field,
-            'func': agg.get('func', 'avg'),
+            'func': agg_func,
             'workers': agg_workers,
         }
 
@@ -214,7 +219,9 @@ def validate_parsed_query(routed: dict) -> tuple[bool, list[str]]:
             errors.append(f"不支持的运算符: {f.get('op')} (字段: {f['field']})")
 
     if agg and not agg.get('workers'):
-        errors.append(f"聚合字段 '{agg['field']}' 无法路由到任何数据源")
+        # COUNT(person_token) is coordinator-side — no workers needed
+        if not (agg.get('func') == 'count' and agg.get('field') == 'person_token'):
+            errors.append(f"聚合字段 '{agg['field']}' 无法路由到任何数据源")
 
     return len(errors) == 0, errors
 
@@ -249,21 +256,21 @@ def parse_with_rules(user_query: str, global_schema) -> Optional[dict]:
         (r'工程师', 'title', 'eq', None),
         (r'研究员', 'title', 'eq', None),
         # Overseas
-        (r'(?:有)?海外经历', 'has_overseas', 'eq', lambda m: 'true'),
-        (r'无海外经历', 'has_overseas', 'eq', lambda m: 'false'),
+        (r'(?:有)?海外经历', 'overseas_experience', 'eq', lambda m: 'true'),
+        (r'无海外经历', 'overseas_experience', 'eq', lambda m: 'false'),
         # Country — handled separately below (supports "美国或德国留学")
         # Award level
-        (r'省级以上奖励', 'max_award_level', 'gte', lambda m: '省级'),
-        (r'省级奖励', 'max_award_level', 'eq', lambda m: '省级'),
-        (r'国家级奖励', 'max_award_level', 'eq', lambda m: '国家级'),
-        (r'市级奖励', 'max_award_level', 'eq', lambda m: '市级'),
-        (r'获奖', 'has_overseas', 'neq', lambda m: ''),
+        (r'省级以上奖励', 'highest_award_level', 'gte', lambda m: '省级'),
+        (r'省级奖励', 'highest_award_level', 'eq', lambda m: '省级'),
+        (r'国家级奖励', 'highest_award_level', 'eq', lambda m: '国家级'),
+        (r'市级奖励', 'highest_award_level', 'eq', lambda m: '市级'),
+        (r'获奖', 'overseas_experience', 'neq', lambda m: ''),
         # Age
         (r'(\d+)岁以下', 'age', 'lt', lambda m: m.group(1)),
         (r'(\d+)岁以上', 'age', 'gt', lambda m: m.group(1)),
         # Year
-        (r'(\d{4})年', 'pay_year', 'eq', None),
-        (r'近(\d+)年', 'pay_year', 'gte', lambda m: str(datetime.now().year - int(m.group(1)) + 1)),
+        (r'(\d{4})年', 'fiscal_year', 'eq', None),
+        (r'近(\d+)年', 'fiscal_year', 'gte', lambda m: str(datetime.now().year - int(m.group(1)) + 1)),
     ]
 
     for regex, field, op, transform in patterns:
@@ -294,9 +301,9 @@ def parse_with_rules(user_query: str, global_schema) -> Optional[dict]:
                     seen.add(c)
                     countries.append(c)
             if len(countries) == 1:
-                filters.append({'field': 'study_country', 'op': 'eq', 'value': countries[0]})
+                filters.append({'field': 'country_of_study', 'op': 'eq', 'value': countries[0]})
             else:
-                filters.append({'field': 'study_country', 'op': 'in', 'value': countries})
+                filters.append({'field': 'country_of_study', 'op': 'in', 'value': countries})
 
     # Determine aggregation
     agg = None
@@ -317,10 +324,10 @@ def parse_with_rules(user_query: str, global_schema) -> Optional[dict]:
     ]
 
     agg_field_map = {
-        '月收入': 'monthly_income', '月工资': 'monthly_income', '收入': 'monthly_income',
-        '年终奖': 'annual_bonus', '奖金': 'annual_bonus',
-        '补贴': 'subsidy', '津贴': 'subsidy',
-        '总工资': 'monthly_income', '总收入': 'monthly_income', '工资': 'monthly_income',
+        '月收入': 'monthly_salary', '月工资': 'monthly_salary', '收入': 'monthly_salary',
+        '年终奖': 'year_end_bonus', '奖金': 'year_end_bonus',
+        '补贴': 'allowance', '津贴': 'allowance',
+        '总工资': 'monthly_salary', '总收入': 'monthly_salary', '工资': 'monthly_salary',
         '人数': 'person_token', '数量': 'person_token',
     }
 
@@ -328,7 +335,7 @@ def parse_with_rules(user_query: str, global_schema) -> Optional[dict]:
         match = re.search(regex, user_query)
         if match:
             field_text = match.group(1) if match.lastindex and match.lastindex >= 1 else '数量'
-            field = agg_field_map.get(field_text, 'monthly_income')
+            field = agg_field_map.get(field_text, 'monthly_salary')
             agg = {'field': field, 'func': func}
             break
 
