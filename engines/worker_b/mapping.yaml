@@ -9,27 +9,27 @@ fields:
     tokenize: hmac-sha256
     alias: [人员, 人, 人员标识]
 
-  - logical: has_overseas
+  - logical: overseas_experience
     physical: has_overseas
-    alias: [海外经历, 有海外经历, 留学经历]
+    alias: [海外经历, 有海外经历, 留学经历, 出国经历]
     mapping:
       "true": "有"
       "false": "无"
 
-  - logical: study_country
+  - logical: country_of_study
     physical: study_country
-    alias: [留学国家, 留学国, 国家]
+    alias: [留学国家, 留学国, 国家, 出国国家]
 
-  - logical: max_award_level
+  - logical: highest_award_level
     physical: max_award_level
-    alias: [获奖等级, 奖励等级, 获奖级别, 奖励级别, 最高奖励, 最高奖项]
+    alias: [获奖等级, 奖励等级, 获奖级别, 奖励级别, 最高奖励, 最高奖项, 奖励]
     mapping:
       "无": 无
       "市级": 市级
       "省级": 省级
       "国家级": 国家级
 
-  - logical: max_award_level_order
+  - logical: award_level_rank
     physical: max_award_level_order
     derived: true
     alias: [获奖等级序号, 奖励序号]
@@ -39,6 +39,6 @@ fields:
       "2": 省级
       "3": 国家级
 
-  - logical: latest_award_year
+  - logical: most_recent_award_year
     physical: latest_award_year
     alias: [获奖年份, 最近获奖年份, 奖项年份]

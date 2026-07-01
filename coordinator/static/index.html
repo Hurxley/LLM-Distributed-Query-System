@@ -53,22 +53,21 @@
         <div class="card-body" id="plan-list"></div>
         <div class="plan-actions-bar" id="plan-actions"></div>
       </section>
+
+      <!-- Right-side placeholder (before plans are generated) -->
+      <section class="card" id="plans-placeholder" style="display:none;">
+        <h2><span class="dot"></span> 方案对比</h2>
+        <div class="card-body" style="text-align:center;padding:40px 20px;">
+          <p style="color:var(--text-muted);margin-bottom:18px;">解析完成，点击下方按钮生成执行方案</p>
+          <button class="btn-primary" onclick="generatePlans()" id="generate-plans-btn">⚡ 生成对比方案</button>
+        </div>
+      </section>
     </div>
 
     <!-- ═══ Atomic Operation Breakdown (dedicated module) ═══ -->
     <section class="card" id="atomic-section" style="display:none;">
       <h2><span class="dot"></span> ⏱ 原子操作耗时分解 <span class="subtitle-sm" id="atomic-plan-name"></span></h2>
       <div class="card-body" id="atomic-breakdown"></div>
-    </section>
-
-    <!-- Execution Status -->
-    <section class="card" id="status-section" style="display:none;">
-      <h2><span class="dot pulse"></span> 实时执行状态</h2>
-      <div class="card-body">
-        <div class="progress-track"><div class="progress-fill" id="progress-bar"></div></div>
-        <div id="stage-cards"></div>
-        <div class="timeline" id="event-timeline"></div>
-      </div>
     </section>
 
     <!-- Final Result -->
@@ -82,7 +81,6 @@
 </div>
 
 <script src="/static/render.js?v=9"></script>
-<script src="/static/ws.js?v=9"></script>
 <script src="/static/app.js?v=9"></script>
 </body>
 </html>

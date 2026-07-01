@@ -293,56 +293,6 @@ header p {
   border-radius: var(--radius-sm); margin-top: 4px;
 }
 
-/* ═══ Execution Status ═══ */
-.progress-track {
-  height: 4px; background: var(--border); border-radius: 2px;
-  margin-bottom: 16px; overflow: hidden;
-}
-.progress-fill {
-  height: 100%; width: 0%;
-  background: linear-gradient(90deg, var(--accent-cyan), var(--accent-green));
-  border-radius: 2px; transition: width 0.4s ease;
-}
-#stage-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 14px; }
-.stage-card {
-  background: var(--bg-card-alt);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 12px 14px;
-  transition: all var(--transition);
-}
-.stage-card.running { border-color: var(--accent-blue); }
-.stage-card.done { border-color: var(--accent-green); }
-.stage-card.error { border-color: var(--accent-red); }
-.stage-header {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 0.8em; margin-bottom: 6px;
-}
-.stage-icon { font-size: 0.9em; }
-.stage-card.running .stage-icon { color: var(--accent-blue); animation: spin 2s linear infinite; }
-.stage-card.done .stage-icon { color: var(--accent-green); }
-.stage-card.error .stage-icon { color: var(--accent-red); }
-@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-.stage-name { color: var(--text-primary); font-weight: 500; }
-.stage-name small { display: block; color: var(--text-muted); font-weight: 400; font-size: 0.8em; }
-.stage-time { margin-left: auto; font-family: var(--font-mono); font-size: 0.78em; color: var(--text-secondary); text-align: right; }
-.stage-time small { display: block; color: var(--text-muted); }
-.stage-progress { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
-.stage-progress-fill { height: 100%; background: var(--accent-blue); border-radius: 2px; transition: width 0.3s ease; }
-
-/* Timeline */
-.timeline {
-  background: var(--bg-card-alt);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px 14px;
-  max-height: 200px; overflow-y: auto;
-  font-family: var(--font-mono);
-  font-size: 0.7em;
-}
-.timeline-entry { color: var(--accent-cyan); padding: 2px 0; line-height: 1.7; }
-.timeline-entry::before { content: '> '; color: var(--text-muted); }
-
 /* ═══ Final Result ═══ */
 .result-big {
   font-size: 1.6em; font-weight: 700; color: var(--text-primary);
@@ -355,8 +305,7 @@ header p {
   border-bottom: 1px solid var(--border); margin-bottom: 16px;
 }
 .result-meta span { padding: 4px 10px; background: var(--bg-card-alt); border-radius: var(--radius-sm); }
-.stage-times { font-size: 0.76em; color: var(--text-muted); margin-bottom: 14px; }
-.stage-times span { color: var(--text-secondary); }
+.result-total-time { font-family: var(--font-mono); font-size: 0.82em; color: var(--text-secondary); padding-top: 10px; }
 
 /* SQL Blocks */
 .sql-block {
@@ -504,5 +453,15 @@ header p {
 @media (max-width: 600px) {
   header h1 { font-size: 1.3em; }
   .query-input-row { flex-direction: column; }
-  #stage-cards { grid-template-columns: 1fr; }
+}
+
+/* ═══ Plans Placeholder ═══ */
+#plans-placeholder {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+#plans-placeholder .btn-primary {
+  font-size: 0.9em;
+  padding: 14px 32px;
 }

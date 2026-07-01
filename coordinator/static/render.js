@@ -121,8 +121,13 @@ function renderPlans(plans) {
 
     document.getElementById('plan-list').innerHTML = html;
     document.getElementById('plan-actions').innerHTML =
-        '<button class="primary" onclick="executeQuery()">▶ 执行推荐方案</button>' +
-        '<button onclick="executeQueryWithPlan()">用所选方案执行</button>';
+        '<button class="primary" onclick="generateSQL()" id="sql-btn">📝 生成方案SQL</button>' +
+        '<button onclick="executeQueryWithPlan()">▶ 执行所选方案</button>';
+
+    // Auto-select first (recommended) plan
+    if (plans.length > 0) {
+        selectPlan(plans[0].id);
+    }
 }
 
 // ═══════════════════════════════════════════════════
@@ -134,7 +139,6 @@ function renderAtomicBreakdown(plan, stageTimes) {
 
     var costs = plan.stage_costs || {};
     var container = document.getElementById('atomic-breakdown');
-    var hasActual = stageTimes && Object.keys(stageTimes).length > 0;
 
     if (!Object.keys(costs).length) {
         container.innerHTML = '<div class="muted">该方案暂无原子操作耗时数据</div>';
@@ -142,7 +146,6 @@ function renderAtomicBreakdown(plan, stageTimes) {
     }
 
     var totalEst = 0;
-    var totalAct = 0;
 
     var html = '';
     html += '<table class="breakdown-table">';
@@ -150,8 +153,6 @@ function renderAtomicBreakdown(plan, stageTimes) {
         '<th class="bd-stage">阶段</th>' +
         '<th class="bd-ops">原子操作明细</th>' +
         '<th class="bd-est">预估耗时</th>' +
-        (hasActual ? '<th class="bd-act">实际耗时</th>' : '') +
-        (hasActual ? '<th class="bd-diff">偏差</th>' : '') +
     '</tr></thead><tbody>';
 
     var entries = Object.entries(costs);
@@ -161,67 +162,22 @@ function renderAtomicBreakdown(plan, stageTimes) {
         var estMs = ci.total_ms || 0;
         totalEst += estMs;
 
-        var actualMs = null;
-        if (hasActual && stageTimes[sid] != null) {
-            actualMs = stageTimes[sid];
-            totalAct += actualMs;
-        }
-
-        var diffClass = '';
-        var diffText = '';
-        if (actualMs !== null) {
-            var diff = Math.round((actualMs - estMs) * 10) / 10;
-            if (diff <= 0) {
-                diffClass = 'under';
-                diffText = diff === 0 ? '±0' : (diff.toFixed(1) + 'ms');
-            } else {
-                diffClass = 'over';
-                diffText = '+' + diff.toFixed(1) + 'ms';
-            }
-        }
-
         html += '<tr>' +
             '<td class="bd-stage"><span class="stage-badge">' + escapeHtml(sid) + '</span></td>' +
             '<td class="bd-ops">' + escapeHtml(ci.breakdown_label || '') + '</td>' +
             '<td class="bd-est">' + formatMs(estMs) + '</td>' +
-            (hasActual ? '<td class="bd-act ' + (actualMs !== null ? (actualMs <= estMs ? 'under' : 'over') : '') + '">' + formatMs(actualMs) + '</td>' : '') +
-            (hasActual ? '<td class="bd-diff ' + diffClass + '">' + (actualMs !== null ? diffText : '--') + '</td>' : '') +
         '</tr>';
     }
-
-    // Totals row — show both simple sum and DAG-aware estimate
-    var dagEst = plan.estimated_cost_ms || totalEst;
-    var totalDiff = totalAct - totalEst;
-    html += '<tr class="breakdown-total-row">' +
-        '<td class="bd-stage"><strong>各阶段累加</strong></td>' +
-        '<td class="bd-ops" style="color:var(--text-muted);font-size:0.85em;">（所有阶段依次执行的总和）</td>' +
-        '<td class="bd-est"><strong>' + formatMs(totalEst) + '</strong></td>' +
-        (hasActual ? '<td class="bd-act"><strong>' + formatMs(totalAct) + '</strong></td>' : '') +
-        (hasActual ? '<td class="bd-diff ' + (totalAct <= totalEst ? 'under' : 'over') + '"><strong>' + (totalDiff >= 0 ? '+' : '') + formatMs(totalDiff) + '</strong></td>' : '') +
-    '</tr>';
 
     // DAG-aware total row
-    if (dagEst !== totalEst) {
-        html += '<tr class="breakdown-dag-row">' +
-            '<td class="bd-stage"><strong>DAG预估</strong></td>' +
-            '<td class="bd-ops" style="color:var(--text-muted);font-size:0.85em;">（并行阶段取最大值，非简单累加）</td>' +
-            '<td class="bd-est" style="color:var(--accent-green);font-weight:700;">' + formatMs(dagEst) + '</td>' +
-            (hasActual ? '<td class="bd-act"></td>' : '') +
-            (hasActual ? '<td class="bd-diff"></td>' : '') +
-        '</tr>';
-    }
+    var dagEst = plan.estimated_cost_ms || totalEst;
+    html += '<tr class="breakdown-dag-row">' +
+        '<td class="bd-stage"><strong>DAG预估</strong></td>' +
+        '<td class="bd-ops" style="color:var(--text-muted);font-size:0.85em;">（并行阶段取最大值，非简单累加）</td>' +
+        '<td class="bd-est" style="color:var(--accent-green);font-weight:700;">' + formatMs(dagEst) + '</td>' +
+    '</tr>';
 
     html += '</tbody></table>';
-
-    // Legend
-    if (hasActual) {
-        html += '<div class="breakdown-legend">' +
-            '<span class="legend-item"><span class="legend-dot under-dot"></span> 实际 ≤ 预估（优于预期）</span>' +
-            '<span class="legend-item"><span class="legend-dot over-dot"></span> 实际 > 预估（慢于预期）</span>' +
-        '</div>';
-    } else {
-        html += '<div class="breakdown-legend muted">执行后将展示实际耗时对比</div>';
-    }
 
     container.innerHTML = html;
     document.getElementById('atomic-section').style.display = 'block';
@@ -234,9 +190,9 @@ function renderAtomicBreakdown(plan, stageTimes) {
 function renderFinalResult(data) {
     var result = data.result || {};
     var count = result.count || 0;
+    var personCount = result.person_count || count;  // unique people, not DB rows
     var value = result.value != null ? result.value : (result.avg != null ? result.avg : 0);
     var func = result.func || 'avg';
-    var accuracy = data.accuracy || 'N/A';
     var funcLabel = FUNC_LABELS[func] || '统计';
 
     var html = '';
@@ -247,32 +203,12 @@ function renderFinalResult(data) {
     } else if (func === 'count') {
         html += '<div class="result-big">共 ' + count.toLocaleString() + ' 人</div>';
     } else if (func === 'sum') {
-        html += '<div class="result-big">' + count.toLocaleString() + ' 人，' + funcLabel + '值 ' +
+        html += '<div class="result-big">' + personCount.toLocaleString() + ' 人，' + funcLabel + '值 ' +
             Number(value).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' 元</div>';
     } else {
-        html += '<div class="result-big">' + count.toLocaleString() + ' 人，' + funcLabel + '值 ' +
+        html += '<div class="result-big">' + personCount.toLocaleString() + ' 人，' + funcLabel + '值 ' +
             Number(value).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' 元</div>';
-    }
-
-    // Metadata row
-    html += '<div class="result-meta">' +
-        '<span>实测 ' + formatMs(data.total_ms) + '</span>' +
-        '<span>预估 ' + formatMs(data.estimated_ms) + '</span>' +
-        '<span>准确度 ' + accuracy + '</span>' +
-        '<span>聚合: ' + funcLabel + '</span>' +
-    '</div>';
-
-    // Stage times summary (compact)
-    if (data.stage_times && Object.keys(data.stage_times).length) {
-        html += '<div class="stage-times">各阶段耗时: ';
-        var entries = Object.entries(data.stage_times);
-        for (var i = 0; i < entries.length; i++) {
-            html += '<span>' + escapeHtml(entries[i][0]) + ': ' + formatMs(entries[i][1]) + '</span>';
-            if (i < entries.length - 1) html += ' · ';
-        }
-        html += '</div>';
     }
 
     document.getElementById('final-result').innerHTML = html;
-    updateProgress(100);
 }

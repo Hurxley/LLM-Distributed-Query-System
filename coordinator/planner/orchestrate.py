@@ -9,7 +9,7 @@ from .precheck import run_precheck
 from .enumeration import _enumerate_all_plans
 from .enumeration import _optimize_coordinator_count
 from .generation import generate_plans_with_llm
-from .validation import _merge_plans
+from .validation import _merge_plans, repair_execution_plan
 from .cost_model import compute_cost, rank_plans
 from .description import _generate_friendly_description
 
@@ -53,7 +53,14 @@ async def generate_and_rank_plans(
     # Must run AFTER LLM merge so LLM-generated plans also get optimized.
     all_plans = [_optimize_coordinator_count(p, query_ast) for p in all_plans]
 
-    # Step 3: Compute costs for every plan
+    # Step 2d: Repair all plans — fill predicates, merge duplicate stages on
+    # the same worker, remove empty filter stages, prune unnecessary intersect
+    # stages, and auto-insert missing ones.  Must run BEFORE cost computation
+    # so that costs are estimated against the cleaned, executable DAG.
+    valid_worker_ids = set(workers_summary.keys())
+    all_plans = [repair_execution_plan(p, query_ast, valid_worker_ids) for p in all_plans]
+
+    # Step 3: Compute costs for every plan (now on repaired, clean stages)
     for plan in all_plans:
         compute_cost(plan, workers_summary, precheck_counts)
 

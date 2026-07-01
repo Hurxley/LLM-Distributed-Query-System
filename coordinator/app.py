@@ -31,7 +31,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from schema_manager import global_schema
 from nl_parser import parse_query
 from planner import generate_and_rank_plans
-from planner.validation import repair_execution_plan
 from scheduler import DAGScheduler
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
@@ -271,7 +270,12 @@ async def get_schema():
 
 @app.post("/api/query")
 async def submit_query(req: dict):
-    """Submit a natural language query. Returns query ID."""
+    """Submit a natural language query — parse only, no plan generation yet.
+
+    Plan generation is deferred to the separate /generate-plans endpoint so
+    the user can first review the parse result before triggering the heavier
+    plan-enumeration + costing pipeline.
+    """
     user_query = req.get('query', '')
     if not user_query:
         return JSONResponse(status_code=400, content={"error": "Query is required"})
@@ -279,23 +283,14 @@ async def submit_query(req: dict):
     query_id = str(uuid.uuid4())[:8]
     logger.info(f"Query [{query_id}]: {user_query}")
 
-    # Parse query
+    # Parse query (no plan generation yet)
     query_ast = parse_query(user_query, global_schema)
 
-    # Generate and rank plans
-    workers_summary = {wid: {
-        'name': w['worker_name'],
-        'row_count': w.get('baseline', {}).get('row_count', 1000),
-        'scan_ms': w.get('baseline', {}).get('scan_latency_ms', 200),
-    } for wid, w in global_schema.workers.items()}
-
-    plans = await generate_and_rank_plans(query_ast, workers_summary, WORKER_URLS)
-
-    # Store
+    # Store without plans — plans are generated later via /generate-plans
     queries[query_id] = {
         'query_text': user_query,
         'query_ast': query_ast,
-        'plans': plans,
+        'plans': [],
         'status': 'parsed',
         'created_at': time.time(),
     }
@@ -307,7 +302,41 @@ async def submit_query(req: dict):
             'aggregation': query_ast.get('aggregation'),
             'valid': query_ast.get('valid', True),
             'errors': query_ast.get('errors', []),
+            'parsed_by': query_ast.get('parsed_by', ''),
         },
+        'plans': [],   # empty — call /generate-plans to populate
+    }
+
+
+@app.post("/api/query/{query_id}/generate-plans")
+async def generate_plans(query_id: str):
+    """Generate and rank execution plans for a parsed query."""
+    if query_id not in queries:
+        return JSONResponse(status_code=404, content={"error": "Query not found"})
+
+    q = queries[query_id]
+    query_ast = q['query_ast']
+
+    if not query_ast.get('valid', True):
+        return JSONResponse(status_code=400, content={
+            "error": "Query is invalid, cannot generate plans",
+            "errors": query_ast.get('errors', []),
+        })
+
+    workers_summary = {wid: {
+        'name': w['worker_name'],
+        'row_count': w.get('baseline', {}).get('row_count', 1000),
+        'scan_ms': w.get('baseline', {}).get('scan_latency_ms', 200),
+    } for wid, w in global_schema.workers.items()}
+
+    plans = await generate_and_rank_plans(query_ast, workers_summary, WORKER_URLS)
+
+    # Store plans
+    q['plans'] = plans
+    q['status'] = 'planned'
+
+    return {
+        'query_id': query_id,
         'plans': [{
             'id': p.get('id'),
             'name': p.get('name'),
@@ -318,8 +347,34 @@ async def submit_query(req: dict):
             'estimated_cost_ms': p.get('estimated_cost_ms', 0),
             'estimated_egress_bytes': p.get('estimated_egress_bytes', 0),
             'recommended': p.get('recommended', False),
+            'stages': p.get('stages', []),
             'stage_costs': p.get('stage_costs', {}),
         } for p in plans],
+    }
+
+
+@app.post("/api/query/{query_id}/sql/{plan_id}")
+async def generate_plan_sql(query_id: str, plan_id: str):
+    """Generate display SQL for a specific plan without executing it."""
+    if query_id not in queries:
+        return JSONResponse(status_code=404, content={"error": "Query not found"})
+
+    q = queries[query_id]
+    plans = q.get('plans', [])
+
+    plan = next((p for p in plans if p.get('id') == plan_id), None)
+    if not plan:
+        return JSONResponse(status_code=404, content={"error": f"Plan {plan_id} not found"})
+
+    # Generate SQL via workers' /explain endpoints (no execution)
+    scheduler = DAGScheduler(WORKER_URLS)
+    scheduler.set_query_id(query_id)
+    stage_sql = await scheduler.generate_sql(plan)
+
+    return {
+        'query_id': query_id,
+        'plan_id': plan_id,
+        'stage_sql': stage_sql,
     }
 
 
@@ -385,12 +440,9 @@ async def execute_query_with_plan(query_id: str, plan_id: str):
 
 async def _execute_plan(query_id: str, plan: dict, q: dict):
     """Execute a specific plan for a query."""
-    query_ast = q['query_ast']
-
-    # Populate plan stages with actual predicate and aggregation data,
-    # fix invalid locations, remove empty filter stages, auto-insert
-    # missing intersect stages — all handled by the shared repair function.
-    plan = repair_execution_plan(plan, query_ast, set(WORKER_URLS.keys()))
+    # Plan has already been repaired and cost-estimated in the planning phase
+    # (repair_execution_plan + compute_cost in generate_and_rank_plans).
+    estimated_ms = plan.get('estimated_cost_ms', 1)
 
     # Create scheduler with WebSocket callback
     async def event_cb(event, data):
@@ -411,13 +463,12 @@ async def _execute_plan(query_id: str, plan: dict, q: dict):
         'query_id': query_id,
         'total_elapsed_ms': result.get('total_ms', 0),
         'result': result.get('result', {}),
-        'estimated_ms': plan.get('estimated_cost_ms', 0),
+        'estimated_ms': estimated_ms,
         'stage_times': result.get('stage_times', {}),
         'stage_sql': result.get('stage_sql', {}),
     })
 
     actual_ms = max(result.get('total_ms', 1), 1)
-    estimated_ms = max(plan.get('estimated_cost_ms', 1), 1)
     accuracy_pct = min(actual_ms, estimated_ms) / max(actual_ms, estimated_ms) * 100
 
     return {
@@ -425,7 +476,7 @@ async def _execute_plan(query_id: str, plan: dict, q: dict):
         'plan_used': plan.get('id'),
         'total_ms': result.get('total_ms', 0),
         'result': result.get('result', {}),
-        'estimated_ms': plan.get('estimated_cost_ms', 0),
+        'estimated_ms': estimated_ms,
         'accuracy': f"{accuracy_pct:.1f}%",
         'stage_times': result.get('stage_times', {}),
         'stage_sql': result.get('stage_sql', {}),

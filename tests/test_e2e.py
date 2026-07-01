@@ -61,9 +61,9 @@ def registered_workers():
         {
             'worker_id': 'worker_b', 'worker_name': '海外经历库',
             'fields': [
-                {'logical': 'study_country', 'alias': ['留学国家'], 'type': 'enum',
+                {'logical': 'country_of_study', 'alias': ['留学国家'], 'type': 'enum',
                  'values': ['美国', '英国', '德国']},
-                {'logical': 'has_overseas', 'alias': ['是否有海外经历'], 'type': 'text',
+                {'logical': 'overseas_experience', 'alias': ['是否有海外经历'], 'type': 'text',
                  'values': ['是', '否']},
                 {'logical': 'award_level', 'alias': ['奖励级别'], 'type': 'enum',
                  'values': ['国家级', '省级', '市级']},
@@ -74,13 +74,13 @@ def registered_workers():
         {
             'worker_id': 'worker_c', 'worker_name': '财务库',
             'fields': [
-                {'logical': 'monthly_income', 'alias': ['月收入'], 'type': 'text',
+                {'logical': 'monthly_salary', 'alias': ['月收入'], 'type': 'text',
                  'values': ['numeric']},
-                {'logical': 'annual_bonus', 'alias': ['年终奖'], 'type': 'text',
+                {'logical': 'year_end_bonus', 'alias': ['年终奖'], 'type': 'text',
                  'values': ['numeric']},
                 {'logical': 'total_subsidy', 'alias': ['总补贴'], 'type': 'text',
                  'values': ['numeric']},
-                {'logical': 'pay_year', 'alias': ['发放年份'], 'type': 'text',
+                {'logical': 'fiscal_year', 'alias': ['发放年份'], 'type': 'text',
                  'values': ['numeric']},
                 {'logical': 'person_token', 'alias': [], 'secret': True, 'type': 'token'},
             ],
@@ -130,6 +130,11 @@ class MockWorkerTransport(httpx.AsyncBaseTransport):
                     'func': body.get('agg_func', 'avg'),
                     'sql': 'SELECT ... FROM salary',
                 })
+            elif '/explain' in url:
+                return make_resp(200, json={
+                    'sql': 'SELECT person_token FROM talent WHERE research_field = \'...\'',
+                    'display_sql': 'SELECT person_token FROM talent WHERE research_field = \'...\'',
+                })
 
         elif 'worker_b:8002' in url:
             if '/filter' in url:
@@ -140,6 +145,11 @@ class MockWorkerTransport(httpx.AsyncBaseTransport):
                 })
             elif '/count' in url:
                 return make_resp(200, json={'count': 3000})
+            elif '/explain' in url:
+                return make_resp(200, json={
+                    'sql': 'SELECT person_token FROM overseas WHERE ...',
+                    'display_sql': 'SELECT person_token FROM overseas WHERE ...',
+                })
 
         elif 'worker_c:8003' in url:
             if '/aggregate' in url:
@@ -176,7 +186,7 @@ class TestAPIEndpoints:
 
     @pytest.mark.asyncio
     async def test_submit_query_single_filter(self, test_client, registered_workers):
-        """POST /api/query returns query_id and plans."""
+        """POST /api/query returns query_id and query_ast (parse only, no plans yet)."""
         resp = await test_client.post('/api/query', json={
             'query': '人工智能方向的副教授的平均月收入',
         })
@@ -184,35 +194,52 @@ class TestAPIEndpoints:
         data = resp.json()
         assert 'query_id' in data
         assert len(data['query_id']) == 8
-        assert 'plans' in data
-        assert len(data['plans']) >= 1
-        for plan in data['plans']:
+        assert 'query_ast' in data
+        # Plans are empty — generated separately via /generate-plans
+        assert data['plans'] == []
+
+        # Now generate plans
+        qid = data['query_id']
+        resp2 = await test_client.post(f'/api/query/{qid}/generate-plans')
+        assert resp2.status_code == 200
+        plans_data = resp2.json()
+        assert 'plans' in plans_data
+        assert len(plans_data['plans']) >= 1
+        for plan in plans_data['plans']:
             assert 'friendly_name' in plan
             assert 'friendly_description' in plan
             assert 'estimated_cost_ms' in plan
 
     @pytest.mark.asyncio
     async def test_submit_query_multi_filter(self, test_client, registered_workers):
-        """Multi-condition query generates multiple plans."""
+        """Multi-condition query generates multiple plans via /generate-plans."""
         resp = await test_client.post('/api/query', json={
             'query': '物联网方向、有海外经历的教授的平均月收入',
         })
         assert resp.status_code == 200
-        data = resp.json()
-        assert len(data['plans']) >= 1
+        qid = resp.json()['query_id']
+
+        # Generate plans separately
+        resp2 = await test_client.post(f'/api/query/{qid}/generate-plans')
+        assert resp2.status_code == 200
+        assert len(resp2.json()['plans']) >= 1
 
     @pytest.mark.asyncio
     async def test_get_plans_endpoint(self, test_client, registered_workers):
-        """GET /api/query/{id}/plans returns detailed plans."""
+        """GET /api/query/{id}/plans returns detailed plans after generation."""
         submit_resp = await test_client.post('/api/query', json={
             'query': '高校副教授的平均月收入',
         })
         qid = submit_resp.json()['query_id']
 
+        # Generate plans first
+        await test_client.post(f'/api/query/{qid}/generate-plans')
+
         resp = await test_client.get(f'/api/query/{qid}/plans')
         assert resp.status_code == 200
         data = resp.json()
         assert data['query_id'] == qid
+        assert len(data['plans']) > 0
         assert 'stages' in data['plans'][0]
 
     @pytest.mark.asyncio
@@ -233,7 +260,11 @@ class TestAPIEndpoints:
         resp = await test_client.post('/api/query', json={
             'query': '生物医药方向、35岁以下且有海外经历的人员数量',
         })
-        data = resp.json()
+        qid = resp.json()['query_id']
+
+        # Generate plans
+        resp2 = await test_client.post(f'/api/query/{qid}/generate-plans')
+        data = resp2.json()
         descs = [p['friendly_description'] for p in data['plans']]
         assert len(descs) == len(set(descs)), f"Duplicate descriptions found: {descs}"
 
@@ -258,11 +289,11 @@ class TestScheduler:
                  'predicates': [{'field': 'research_field', 'op': 'eq', 'value': '人工智能'}]},
                 {'id': 'F2', 'type': 'filter', 'location': 'worker_b',
                  'concurrent_group': 1,
-                 'predicates': [{'field': 'has_overseas', 'op': 'eq', 'value': '是'}]},
+                 'predicates': [{'field': 'overseas_experience', 'op': 'eq', 'value': '是'}]},
                 {'id': 'I', 'type': 'intersect', 'location': 'coordinator',
                  'depends_on': ['F1', 'F2']},
                 {'id': 'C', 'type': 'aggregate', 'location': 'worker_c',
-                 'depends_on': ['I'], 'agg_field': 'monthly_income', 'agg_func': 'avg'},
+                 'depends_on': ['I'], 'agg_field': 'monthly_salary', 'agg_func': 'avg'},
                 {'id': 'R', 'type': 'compute', 'location': 'coordinator',
                  'depends_on': ['C'], 'agg_func': 'avg'},
             ],
@@ -296,7 +327,7 @@ class TestScheduler:
                 {'id': 'S1', 'type': 'filter', 'location': 'worker_a',
                  'predicates': [{'field': 'research_field', 'op': 'eq', 'value': '物联网'}]},
                 {'id': 'C', 'type': 'aggregate', 'location': 'worker_c',
-                 'depends_on': ['S1'], 'agg_field': 'monthly_income', 'agg_func': 'avg'},
+                 'depends_on': ['S1'], 'agg_field': 'monthly_salary', 'agg_func': 'avg'},
                 {'id': 'R', 'type': 'compute', 'location': 'coordinator',
                  'depends_on': ['C'], 'agg_func': 'avg'},
             ],
@@ -334,7 +365,7 @@ class TestScheduler:
                 {'id': 'I', 'type': 'intersect', 'location': 'worker_c',
                  'depends_on': ['F1', 'F2']},
                 {'id': 'C', 'type': 'aggregate', 'location': 'worker_c',
-                 'depends_on': ['I'], 'agg_field': 'annual_bonus', 'agg_func': 'avg'},
+                 'depends_on': ['I'], 'agg_field': 'year_end_bonus', 'agg_func': 'avg'},
                 {'id': 'R', 'type': 'compute', 'location': 'coordinator',
                  'depends_on': ['C'], 'agg_func': 'avg'},
             ],
@@ -464,7 +495,7 @@ class TestRepairExecutionPlan:
                  'workers': ['worker_a']},
             ],
             'aggregation': {
-                'field': 'monthly_income', 'func': 'avg', 'workers': ['worker_c'],
+                'field': 'monthly_salary', 'func': 'avg', 'workers': ['worker_c'],
             },
         }
 
@@ -483,7 +514,7 @@ class TestRepairExecutionPlan:
 
         assert repaired['stages'][0]['predicates'][0]['field'] == 'research_field'
         agg_stage = repaired['stages'][1]
-        assert agg_stage['agg_field'] == 'monthly_income'
+        assert agg_stage['agg_field'] == 'monthly_salary'
         assert agg_stage['agg_func'] == 'avg'
 
     def test_repair_merges_duplicate_filters(self, registered_workers):
@@ -498,7 +529,7 @@ class TestRepairExecutionPlan:
                  'workers': ['worker_a']},
             ],
             'aggregation': {
-                'field': 'annual_bonus', 'func': 'avg', 'workers': ['worker_c'],
+                'field': 'year_end_bonus', 'func': 'avg', 'workers': ['worker_c'],
             },
         }
 
@@ -533,7 +564,7 @@ class TestRepairExecutionPlan:
                  'workers': ['worker_b']},
             ],
             'aggregation': {
-                'field': 'monthly_income', 'func': 'avg', 'workers': ['worker_c'],
+                'field': 'monthly_salary', 'func': 'avg', 'workers': ['worker_c'],
             },
         }
 

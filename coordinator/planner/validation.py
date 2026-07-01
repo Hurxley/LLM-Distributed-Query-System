@@ -117,7 +117,8 @@ def repair_execution_plan(plan: dict, query_ast: dict, valid_worker_ids: set | N
     Returns the repaired plan dict (mutated in place).
     """
     filters = query_ast.get('filters', [])
-    agg = query_ast.get('aggregation', {}) or {}
+    agg_raw = query_ast.get('aggregation')
+    agg = agg_raw or {}
 
     # Map filter predicates to stages by worker
     worker_filters = {}
@@ -131,8 +132,11 @@ def repair_execution_plan(plan: dict, query_ast: dict, valid_worker_ids: set | N
                 'value': f['value'],
             })
 
-    agg_func = agg.get('func', 'avg')
-    agg_field = agg.get('field', 'monthly_income')
+    # When aggregation was not specified at all, default to COUNT(person_token)
+    # rather than AVG(monthly_salary).  Counting is always a safe fallback;
+    # averaging salary when the user didn't ask for it is actively misleading.
+    agg_func = agg.get('func', 'count' if not agg_raw else 'avg')
+    agg_field = agg.get('field', 'person_token' if not agg_raw else 'monthly_salary')
     agg_workers = agg.get('workers', [])
     default_agg_worker = agg_workers[0] if agg_workers else 'worker_c'
 
@@ -203,6 +207,36 @@ def repair_execution_plan(plan: dict, query_ast: dict, valid_worker_ids: set | N
         for stage in repaired_stages:
             depends = stage.get('depends_on', [])
             stage['depends_on'] = [d for d in depends if d not in removed_ids]
+
+    # Step 3.5: Remove unnecessary intersect stages that have < 2 effective
+    # inputs after filter removals.  A single-input intersect is a pure
+    # pass-through — it forwards ALL tokens downstream without any actual
+    # set intersection.  This causes aggregate stages to run on unfiltered
+    # data (e.g. AVG over 144 people instead of the intended 3).
+    extra_removed = set()
+    for stage in repaired_stages:
+        if stage['type'] != 'intersect':
+            continue
+        effective_deps = [d for d in stage.get('depends_on', [])
+                          if d not in removed_ids and d not in extra_removed]
+        if len(effective_deps) < 2:
+            logger.warning(
+                f"Plan {plan.get('id')}: removing unnecessary intersect stage "
+                f"{stage['id']} (only {len(effective_deps)} effective input(s))"
+            )
+            extra_removed.add(stage['id'])
+            # Re-wire downstream: replace this intersect ID with its
+            # remaining upstream stage(s) in all dependent stages.
+            for s in repaired_stages:
+                deps = s.get('depends_on', [])
+                if stage['id'] in deps:
+                    s['depends_on'] = [
+                        d for d in deps if d != stage['id']
+                    ] + effective_deps
+
+    if extra_removed:
+        repaired_stages = [s for s in repaired_stages if s['id'] not in extra_removed]
+        removed_ids |= extra_removed
 
     # Step 4: Auto-insert intersect if 2+ filter locations but no intersect
     filter_stage_ids = [s['id'] for s in repaired_stages if s['type'] == 'filter']

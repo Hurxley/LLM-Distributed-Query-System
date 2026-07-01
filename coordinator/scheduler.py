@@ -116,15 +116,52 @@ class DAGScheduler:
                         final_result = self.results[sid]
                         break
 
-        # Build SQL log from stage results
+        # Build SQL log — include every stage so the frontend can show the
+        # full execution order.  Stages that produce real SQL (filter,
+        # aggregate) use the actual query text.  Intersect and compute stages
+        # get a synthetic description so the user sees the complete DAG shape.
         stage_sql = {}
-        for sid, result in self.results.items():
-            if 'sql' in result:
-                so = stage_objects.get(sid, {})
+        for stage in stages:
+            sid = stage['id']
+            stype = stage['type']
+            location = stage['location']
+
+            sql_text = ''
+            if sid in self.results:
+                sql_text = (
+                    self.results[sid].get('display_sql')
+                    or self.results[sid].get('sql')
+                    or ''
+                )
+
+            if stype in ('filter', 'aggregate') and sql_text:
                 stage_sql[sid] = {
-                    'sql': (result.get('display_sql') or result.get('sql') or ''),
-                    'location': so.get('location', ''),
-                    'type': so.get('type', ''),
+                    'sql': sql_text,
+                    'location': location,
+                    'type': stype,
+                }
+            elif stype == 'intersect':
+                dep_count = len(stage.get('depends_on', []))
+                if location == 'coordinator':
+                    desc = f"-- Coordinator侧求交：{dep_count}路Token集合取交集"
+                else:
+                    desc = f"-- 数据下推求交：{dep_count}路Token合并去重后推送至 {location}"
+                stage_sql[sid] = {
+                    'sql': desc,
+                    'location': location,
+                    'type': stype,
+                }
+            elif stype == 'compute':
+                if stage.get('coordinator_count'):
+                    desc = f"-- 主控直接计数：统计求交后的Token数量 = {sql_text or self.results.get(sid, {}).get('count', '?')}"
+                else:
+                    dep_count = len(stage.get('depends_on', []))
+                    agg_func = stage.get('agg_func', 'avg')
+                    desc = f"-- 主控汇总计算：合并{dep_count}路聚合结果，最终{agg_func.upper()}"
+                stage_sql[sid] = {
+                    'sql': desc,
+                    'location': location,
+                    'type': stype,
                 }
 
         await self._push_event('execution_complete', {
@@ -202,7 +239,14 @@ class DAGScheduler:
             resp = await client.post(f"{url}/filter", json={"predicates": predicates})
             resp.raise_for_status()
             data = resp.json()
-            return {'tokens': data.get('tokens', []), 'count': data.get('count', 0), 'sql': data.get('sql', ''), 'display_sql': data.get('display_sql', ''), 'params': data.get('params', [])}
+            return {
+                'tokens': data.get('tokens', []),
+                'count': data.get('count', 0),
+                'person_count': data.get('count', 0),  # filter result = unique people on this worker
+                'sql': data.get('sql', ''),
+                'display_sql': data.get('display_sql', ''),
+                'params': data.get('params', []),
+            }
 
     async def _do_intersect(self, stage: dict) -> dict:
         """Compute token intersection."""
@@ -217,7 +261,7 @@ class DAGScheduler:
                 token_sets.append(set(tokens))
 
         if not token_sets:
-            return {'tokens': [], 'count': 0}
+            return {'tokens': [], 'count': 0, 'person_count': 0}
 
         if location == 'coordinator':
             # Center-side intersection: compute set intersection of all upstream token sets
@@ -225,7 +269,7 @@ class DAGScheduler:
             for ts in token_sets[1:]:
                 intersection = intersection & ts
             tokens = list(intersection)
-            return {'tokens': tokens, 'count': len(tokens)}
+            return {'tokens': tokens, 'count': len(tokens), 'person_count': len(tokens)}
         else:
             # Push-down: union all upstream tokens and pass them to the worker.
             # The worker's /aggregate endpoint already does local matching against its
@@ -240,7 +284,7 @@ class DAGScheduler:
                         all_tokens.append(t)
             logger.info(f"Push-down intersect @ {location}: unioned {len(all_tokens)} unique tokens "
                         f"from {len(token_sets)} upstream sets (coordinator intersection skipped)")
-            return {'tokens': all_tokens, 'count': len(all_tokens)}
+            return {'tokens': all_tokens, 'count': len(all_tokens), 'person_count': len(all_tokens)}
 
     async def _do_aggregate(self, stage: dict) -> dict:
         """Execute an aggregate stage on a worker."""
@@ -277,6 +321,7 @@ class DAGScheduler:
                 'max': data.get('max'),
                 'value': data.get('value', 0),
                 'func': data.get('func', agg_func),
+                'person_count': len(all_tokens),   # number of unique people
                 'sql': data.get('sql', ''),
                 'display_sql': data.get('display_sql', ''),
             }
@@ -286,6 +331,7 @@ class DAGScheduler:
         depends = stage.get('depends_on', [])
         total_sum = 0
         total_count = 0
+        total_person_count = 0
         total_min = None
         total_max = None
         agg_func = stage.get('agg_func', 'avg')
@@ -295,6 +341,7 @@ class DAGScheduler:
                 r = self.results[d]
                 total_sum += r.get('sum', 0)
                 total_count += r.get('count', 0)
+                total_person_count += r.get('person_count', 0)
                 r_min = r.get('min')
                 r_max = r.get('max')
                 if r_min is not None:
@@ -303,6 +350,11 @@ class DAGScheduler:
                 if r_max is not None:
                     if total_max is None or r_max > total_max:
                         total_max = r_max
+
+        # For coordinator-side COUNT, the "count" IS the person count (unique tokens)
+        # and there are no aggregate stages contributing record counts.
+        if stage.get('coordinator_count'):
+            total_person_count = total_count
 
         if agg_func == 'count':
             final_value = total_count
@@ -330,6 +382,7 @@ class DAGScheduler:
         result = {
             'sum': total_sum,
             'count': total_count,
+            'person_count': total_person_count,   # unique people (from tokens), not DB rows
             'min': total_min if total_min is not None else 0,
             'max': total_max if total_max is not None else 0,
             'value': final_value,
@@ -340,6 +393,87 @@ class DAGScheduler:
         if stage.get('coordinator_count'):
             result['display_sql'] = f"-- 主控直接计数：统计求交后的Token数量 = {total_count}"
         return result
+
+    async def generate_sql(self, plan: dict) -> dict:
+        """Generate display SQL for all stages without executing queries.
+
+        Calls each worker's /explain endpoint for filter / aggregate stages
+        and synthesizes coordinator-side stage descriptions locally.
+        """
+        stages = plan.get('stages', [])
+        stage_sql: dict[str, dict] = {}
+
+        for stage in stages:
+            sid = stage['id']
+            stype = stage['type']
+            location = stage['location']
+
+            if stype == 'filter':
+                url = self.worker_urls.get(location)
+                predicates = stage.get('predicates', [])
+                try:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        resp = await client.post(f"{url}/explain", json={
+                            "type": "filter",
+                            "predicates": predicates,
+                        })
+                        resp.raise_for_status()
+                        data = resp.json()
+                except Exception as e:
+                    data = {'display_sql': f"-- 无法生成SQL: {e}"}
+                stage_sql[sid] = {
+                    'sql': data.get('display_sql', ''),
+                    'location': location,
+                    'type': stype,
+                }
+
+            elif stype == 'aggregate':
+                url = self.worker_urls.get(location)
+                agg_field = stage.get('agg_field', '')
+                agg_func = stage.get('agg_func', '')
+                try:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        resp = await client.post(f"{url}/explain", json={
+                            "type": "aggregate",
+                            "agg_field": agg_field,
+                            "agg_func": agg_func,
+                        })
+                        resp.raise_for_status()
+                        data = resp.json()
+                except Exception as e:
+                    data = {'display_sql': f"-- 无法生成SQL: {e}"}
+                stage_sql[sid] = {
+                    'sql': data.get('display_sql', ''),
+                    'location': location,
+                    'type': stype,
+                }
+
+            elif stype == 'intersect':
+                dep_count = len(stage.get('depends_on', []))
+                if location == 'coordinator':
+                    desc = f"-- Coordinator侧求交：{dep_count}路Token集合取交集"
+                else:
+                    desc = f"-- 数据下推求交：{dep_count}路Token合并去重后推送至 {location}"
+                stage_sql[sid] = {
+                    'sql': desc,
+                    'location': location,
+                    'type': stype,
+                }
+
+            elif stype == 'compute':
+                if stage.get('coordinator_count'):
+                    desc = "-- 主控直接计数：统计求交后的Token数量"
+                else:
+                    dep_count = len(stage.get('depends_on', []))
+                    agg_func = stage.get('agg_func', 'avg')
+                    desc = f"-- 主控汇总计算：合并{dep_count}路聚合结果，最终{agg_func.upper()}"
+                stage_sql[sid] = {
+                    'sql': desc,
+                    'location': location,
+                    'type': stype,
+                }
+
+        return stage_sql
 
     def _summarize_result(self, result: dict) -> str:
         """Create a human-readable summary of a stage result."""

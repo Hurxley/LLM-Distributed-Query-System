@@ -50,7 +50,7 @@ SAMPLE_MAPPING = {
             'tokenize': 'hmac-sha256',
         },
         {
-            'logical': 'monthly_income',
+            'logical': 'monthly_salary',
             'physical': 'monthly_income',
             'alias': ['月收入', '月工资', '收入'],
         },

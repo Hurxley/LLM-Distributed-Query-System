@@ -5,7 +5,6 @@ Detected patterns:
   - Chinese ID card numbers (18 digits + check char)
   - Phone numbers
   - Email addresses
-  - Chinese personal names (with care to avoid false positives on field values)
 """
 
 import re
@@ -15,6 +14,8 @@ import logging
 logger = logging.getLogger("egress_filter")
 
 # PII detection patterns
+# Only string values in the response are scanned (see _collect_strings),
+# so patterns only need to match within individual string values.
 PII_PATTERNS = [
     (r'\b\d{17}[\dXx]\b', 'ID Card Number'),
     (r'\b1[3-9]\d{9}\b', 'Phone Number'),
@@ -33,12 +34,32 @@ SAFE_VALUES = {
 }
 
 
+def _collect_strings(data) -> list[str]:
+    """Recursively walk a JSON-like structure and collect all string values.
+
+    Numeric values, booleans, and None are skipped — they can never contain
+    PII, and scanning them causes false positives (e.g. floating-point
+    substrings matching phone/ID patterns, or HMAC hex hashes).
+    """
+    strings = []
+    if isinstance(data, str):
+        strings.append(data)
+    elif isinstance(data, dict):
+        for v in data.values():
+            strings.extend(_collect_strings(v))
+    elif isinstance(data, list):
+        for item in data:
+            strings.extend(_collect_strings(item))
+    return strings
+
+
 def scan_response(data: dict | list | str) -> tuple[bool, str | None]:
-    """Scan response body for PII leakage.
+    """Scan response body for PII leakage.  Only string values are scanned.
 
     Returns (is_clean, description_of_first_violation).
     """
-    text = json.dumps(data, ensure_ascii=False)
+    strings = _collect_strings(data)
+    text = ' '.join(strings)
 
     for pattern, label in PII_PATTERNS:
         matches = re.findall(pattern, text)

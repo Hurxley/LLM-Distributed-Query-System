@@ -17,9 +17,9 @@ def workers_summary():
         'worker_a': {'name': '人才库', 'row_count': 1000, 'scan_ms': 180,
                      'fields': ['person_token', 'gender', 'research_field', 'title', 'org_type', 'age']},
         'worker_b': {'name': '海外库', 'row_count': 700, 'scan_ms': 160,
-                     'fields': ['person_token', 'has_overseas', 'study_country', 'max_award_level']},
+                     'fields': ['person_token', 'overseas_experience', 'country_of_study', 'highest_award_level']},
         'worker_c': {'name': '财务库', 'row_count': 28800, 'scan_ms': 500,
-                     'fields': ['person_token', 'monthly_income', 'annual_bonus', 'subsidy']},
+                     'fields': ['person_token', 'monthly_salary', 'year_end_bonus', 'allowance']},
     }
 
 
@@ -28,7 +28,7 @@ def precheck_counts():
     return {'worker_a': 100, 'worker_b': 50}
 
 
-def make_query_ast(filters=None, agg_workers=None, agg_field='monthly_income', agg_func='avg'):
+def make_query_ast(filters=None, agg_workers=None, agg_field='monthly_salary', agg_func='avg'):
     """Build a query_ast with given filters and aggregation."""
     return {
         'filters': filters or [],
@@ -49,7 +49,7 @@ def make_single_filter_ast():
 def make_two_filter_ast():
     return make_query_ast(filters=[
         {'field': 'gender', 'op': 'eq', 'value': '女', 'workers': ['worker_a']},
-        {'field': 'has_overseas', 'op': 'eq', 'value': 'true', 'workers': ['worker_b']},
+        {'field': 'overseas_experience', 'op': 'eq', 'value': 'true', 'workers': ['worker_b']},
     ])
 
 

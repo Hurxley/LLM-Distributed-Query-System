@@ -9,22 +9,22 @@ fields:
     tokenize: hmac-sha256
     alias: [人员, 人, 人员标识]
 
-  - logical: monthly_income
+  - logical: monthly_salary
     physical: monthly_income
-    alias: [月收入, 月工资, 收入, 工资]
+    alias: [月收入, 月工资, 收入, 工资, 月薪, 薪水]
 
-  - logical: annual_bonus
+  - logical: year_end_bonus
     physical: annual_bonus
-    alias: [年终奖, 奖金, 年度奖金]
+    alias: [年终奖, 奖金, 年度奖金, 年底奖金]
 
-  - logical: subsidy
+  - logical: allowance
     physical: subsidy
-    alias: [补贴, 津贴, 补助]
+    alias: [补贴, 津贴, 补助, 福利]
 
-  - logical: pay_year
+  - logical: fiscal_year
     physical: pay_year
-    alias: [年份, 年度, 发放年份, 发放年度]
+    alias: [年份, 年度, 发放年份, 发放年度, 年]
 
-  - logical: pay_month
+  - logical: fiscal_month
     physical: pay_month
-    alias: [月份, 发放月份]
+    alias: [月份, 发放月份, 月]

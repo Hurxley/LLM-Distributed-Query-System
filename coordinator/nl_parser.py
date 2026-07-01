@@ -3,11 +3,12 @@ Natural Language Query Parser — LLM-based with rule fallback.
 
 Three-layer pipeline:
   1. LLM Layer: Semantic understanding + structured JSON extraction
-  2. Anchor Layer: Field routing + value validation
+  2. Anchor Layer: Field routing + value validation (embedding semantic match)
   3. Validation Layer: Completeness + legality checks
 """
 
 import json
+import math
 import re
 import logging
 import os
@@ -15,6 +16,186 @@ from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger("nl_parser")
+
+
+# ── Embedding-based semantic matching ──
+
+# Cache: field_name -> {value_string: embedding_vector}
+_embedding_cache: dict[str, dict[str, list[float]]] = {}
+
+
+def _get_embeddings_batch(texts: list[str]) -> Optional[list[list[float]]]:
+    """Get embedding vectors from the LLM API in one batch.
+
+    Returns None if the embedding endpoint is unavailable.
+    """
+    api_base = os.environ.get('LLM_API_BASE', '')
+    api_key = os.environ.get('LLM_API_KEY', '')
+    if not api_base:
+        return None
+    try:
+        import httpx
+        with httpx.Client(timeout=15) as client:
+            resp = client.post(
+                f"{api_base}/embeddings",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": os.environ.get('LLM_MODEL', 'qwen2.5:7b'),
+                    "input": texts,
+                },
+            )
+            if resp.status_code != 200:
+                logger.debug(f"Embedding API returned {resp.status_code}, falling back to bigram")
+                return None
+            data = resp.json()
+            return [d['embedding'] for d in data['data']]
+    except Exception as e:
+        logger.debug(f"Embedding API unavailable: {e}, falling back to bigram")
+        return None
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two embedding vectors (no numpy dependency)."""
+    if not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+
+
+def _char_bigram_similarity(a: str, b: str) -> float:
+    """Character bigram Jaccard similarity — lightweight fallback.
+
+    Works well for Chinese text: "获奖情况" vs "获奖等级" share "获奖" bigram.
+    """
+    def bigrams(s: str) -> set[str]:
+        return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) >= 2 else {s}
+
+    ba = bigrams(a)
+    bb = bigrams(b)
+    if not ba or not bb:
+        # Single-char fallback: unigram overlap
+        return len(set(a) & set(b)) / max(len(set(a) | set(b)), 1)
+    return len(ba & bb) / len(ba | bb)
+
+
+def _build_embedding_cache(global_schema) -> None:
+    """Pre-compute embedding vectors for all known values in the schema.
+
+    Called once on first use; results are cached in ``_embedding_cache``.
+    """
+    # Collect fields that have known values and are not yet cached
+    needed: dict[str, list[str]] = {}
+    for logical, details in global_schema.field_details.items():
+        values = details.get('values', [])
+        if values and logical not in _embedding_cache:
+            needed[logical] = values
+
+    if not needed:
+        return
+
+    # Flatten for one batch API call
+    all_texts: list[str] = []
+    field_spans: dict[str, tuple[int, int]] = {}
+    idx = 0
+    for field, values in needed.items():
+        field_spans[field] = (idx, idx + len(values))
+        all_texts.extend(values)
+        idx += len(values)
+
+    logger.info(f"Building embedding cache for {len(needed)} fields, {len(all_texts)} values")
+
+    embeddings = _get_embeddings_batch(all_texts)
+
+    for field, (start, end) in field_spans.items():
+        if embeddings:
+            _embedding_cache[field] = {
+                v: emb for v, emb in zip(needed[field], embeddings[start:end])
+            }
+            logger.debug(f"  {field}: {len(_embedding_cache[field])} vectors cached (embedding)")
+        else:
+            # Embedding API unavailable — store empty dict as sentinel
+            # so we don't retry; bigram fallback will be used instead
+            _embedding_cache[field] = {}
+            logger.debug(f"  {field}: embedding unavailable, will use bigram fallback")
+
+
+def _semantic_match_value(value: str, known_values: list[str], field_name: str) -> Optional[str]:
+    """Match a value against known domain values using embedding + bigram fallback.
+
+    Returns the best-matching known value, or None if no match exceeds threshold.
+    """
+    if not known_values:
+        return None
+    if value in known_values:
+        return value
+
+    # ── Tier 1: embedding cosine similarity ──
+    cached = _embedding_cache.get(field_name)
+    if cached:  # non-empty dict means embeddings are available
+        emb_result = _get_embeddings_batch([value])
+        if emb_result:
+            query_vec = emb_result[0]
+            best = max(known_values, key=lambda kv: _cosine_similarity(query_vec, cached.get(kv, [])))
+            best_sim = _cosine_similarity(query_vec, cached.get(best, []))
+            if best_sim > 0.65:
+                logger.info(f"Embedding match: '{value}' → '{best}' (cos={best_sim:.3f})")
+                return best
+
+    # ── Tier 2: character bigram Jaccard ──
+    best = max(known_values, key=lambda kv: _char_bigram_similarity(value, kv))
+    best_sim = _char_bigram_similarity(value, best)
+    if best_sim > 0.2:
+        logger.info(f"Bigram match: '{value}' → '{best}' (sim={best_sim:.3f})")
+        return best
+
+    return None
+
+
+def _semantic_match_field(name: str, global_schema) -> Optional[str]:
+    """Semantic match a field name/alias against known fields.
+
+    Uses the same embedding + bigram fallback strategy as value matching.
+    """
+    # Collect all candidate (display_name, logical_field) pairs
+    candidates: list[tuple[str, str]] = []
+    for logical in global_schema.field_index:
+        candidates.append((logical, logical))
+    for alias, logical in global_schema.alias_index.items():
+        candidates.append((alias, logical))
+
+    if not candidates:
+        return None
+
+    display_names = [c[0] for c in candidates]
+
+    # ── Tier 1: embedding ──
+    emb_result = _get_embeddings_batch([name] + display_names)
+    if emb_result:
+        query_vec = emb_result[0]
+        field_vecs = emb_result[1:]
+        best_idx = max(
+            range(len(field_vecs)),
+            key=lambda i: _cosine_similarity(query_vec, field_vecs[i]),
+        )
+        best_sim = _cosine_similarity(query_vec, field_vecs[best_idx])
+        if best_sim > 0.65:
+            matched_field = candidates[best_idx][1]
+            logger.info(f"Embedding field match: '{name}' → '{matched_field}' (cos={best_sim:.3f})")
+            return matched_field
+
+    # ── Tier 2: character bigram ──
+    best = max(candidates, key=lambda c: _char_bigram_similarity(name, c[0]))
+    best_sim = _char_bigram_similarity(name, best[0])
+    if best_sim > 0.2:
+        logger.info(f"Bigram field match: '{name}' → '{best[1]}' (sim={best_sim:.3f})")
+        return best[1]
+
+    return None
 
 
 # ── Layer 1: LLM-Based Parsing ──
@@ -36,6 +217,8 @@ def _build_llm_prompt(user_query: str, schema_text: str) -> str:
 
 规则:
 - field必须使用上面全局视图中的逻辑字段名
+- value必须严格从对应字段的"可选值"列表中选取，不要自创或改写用户输入
+- 如果用户表达的值不在可选值列表中，选择语义最接近的可选值（例："美利坚"→"美国"、"AI"→"人工智能"、"德意志"→"德国"）
 - "以上"/"及以上"用 gte，"以下"/"及以下"用 lte
 - 年龄/岁 相关: op用lt/lte/gt/gte, value用数字
 - "近N年"表示年份>= (2025-N+1)
@@ -104,7 +287,13 @@ def parse_with_llm(user_query: str, schema_text: str) -> Optional[dict]:
 # ── Layer 2: Anchor (Field Routing + Value Validation) ──
 
 def anchor_and_validate(parsed: dict, global_schema) -> dict:
-    """Route each filter to its worker, validate values against known domains."""
+    """Route each filter to its worker, validate values against known domains.
+
+    Uses embedding-based semantic matching (with character bigram fallback)
+    to correct values and field names that don't exactly match the schema.
+    """
+    # Ensure embedding cache is built (first call only)
+    _build_embedding_cache(global_schema)
 
     filters = parsed.get('filters', [])
     routed_filters = []
@@ -123,29 +312,27 @@ def anchor_and_validate(parsed: dict, global_schema) -> dict:
             workers = global_schema.get_workers_for_field(field_name)
 
         if not workers:
-            logger.warning(f"Field '{f['field']}' not found in any worker")
-            # Try fuzzy match
-            field_name = _fuzzy_match_field(f['field'], global_schema)
+            logger.warning(f"Field '{f['field']}' not found in any worker, trying semantic match")
+            field_name = _semantic_match_field(f['field'], global_schema)
             if field_name:
                 workers = global_schema.get_workers_for_field(field_name)
             else:
                 continue
 
-        # Validate value(s)
+        # Validate value(s) with semantic matching
         known_values = global_schema.get_field_values(field_name)
         if known_values and op == 'in' and isinstance(value, list):
             # Validate each element in the list
             mapped_values = []
             for v in value:
                 if str(v) not in known_values:
-                    mv = _fuzzy_match_value(str(v), known_values)
+                    mv = _semantic_match_value(str(v), known_values, field_name)
                     mapped_values.append(mv if mv else v)
                 else:
                     mapped_values.append(v)
             value = mapped_values
         elif known_values and str(value) not in known_values:
-            # Try to map via common patterns
-            mapped_value = _fuzzy_match_value(str(value), known_values)
+            mapped_value = _semantic_match_value(str(value), known_values, field_name)
             if mapped_value:
                 value = mapped_value
 
@@ -172,35 +359,22 @@ def anchor_and_validate(parsed: dict, global_schema) -> dict:
             'func': agg_func,
             'workers': agg_workers,
         }
+    elif routed_filters:
+        # No aggregation was specified but filters are present —
+        # default to COUNT(person_token) as the safest fallback.
+        # AVG(monthly_salary) is actively misleading when the user
+        # only asked "how many" (or didn't specify any aggregation).
+        agg_workers = list({w for f in routed_filters for w in f.get('workers', [])})
+        routed_agg = {
+            'field': 'person_token',
+            'func': 'count',
+            'workers': agg_workers,
+        }
 
     return {
         'filters': routed_filters,
         'aggregation': routed_agg,
     }
-
-
-def _fuzzy_match_field(alias: str, global_schema) -> Optional[str]:
-    """Fuzzy match a field name."""
-    all_fields = list(global_schema.field_index.keys())
-    # Direct substring match
-    for field in all_fields:
-        if alias in field or field in alias:
-            return field
-    # Alias substring match
-    for logical, details in global_schema.field_details.items():
-        # Check in alias_index values
-        for als, log in global_schema.alias_index.items():
-            if alias in als or als in alias:
-                return log
-    return None
-
-
-def _fuzzy_match_value(value: str, known_values: list[str]) -> Optional[str]:
-    """Fuzzy match a value against known domain values."""
-    for kv in known_values:
-        if value in kv or kv in value:
-            return kv
-    return None
 
 
 # ── Layer 3: Validation ──
@@ -228,6 +402,12 @@ def validate_parsed_query(routed: dict) -> tuple[bool, list[str]]:
 
 # ── Rule-based fallback parser ──
 
+# Salary-related terms used across multiple aggregation regex patterns.
+# Must stay in sync with monthly_salary aliases in mapping.yaml.
+_SALARY_TERMS = r'月收入|月工资|收入|工资|月薪|薪水|年终奖|奖金|补贴|津贴'
+_SALARY_NON_SUBSIDY = r'月收入|月工资|收入|工资|月薪|薪水|年终奖|奖金'
+
+
 def parse_with_rules(user_query: str, global_schema) -> Optional[dict]:
     """Rule-based fallback when LLM is unavailable.
 
@@ -241,23 +421,28 @@ def parse_with_rules(user_query: str, global_schema) -> Optional[dict]:
         # Research field
         (r'(物联网|人工智能|新材料|生物医药|量子计算)方向', 'research_field', 'eq', None),
         (r'(物联网|人工智能|新材料|生物医药|量子计算)领域', 'research_field', 'eq', None),
-        # Gender
+        # Gender — "女性"/"男性" (explicit), then standalone "女"/"男"
+        # before a title/profession (e.g. "女研究员", "男教授")
         (r'女性', 'gender', 'eq', lambda m: '女'),
         (r'男性', 'gender', 'eq', lambda m: '男'),
+        (r'女(?:研究员|教授|工程师|讲师|博士|性)', 'gender', 'eq', lambda m: '女'),
+        (r'男(?:研究员|教授|工程师|讲师|博士|性)', 'gender', 'eq', lambda m: '男'),
         # Org type
         (r'高校', 'org_type', 'eq', None),
         (r'科研院所', 'org_type', 'eq', None),
         (r'企业', 'org_type', 'eq', None),
-        # Title
-        (r'教授', 'title', 'eq', None),
-        (r'副教授', 'title', 'eq', None),
-        (r'讲师', 'title', 'eq', None),
+        # Title — longer/specific patterns first, negative lookbehind to avoid
+        # substring false matches (e.g. "副教授" incorrectly matching "教授")
         (r'工程师及以上', 'title', 'gte', lambda m: '工程师'),
-        (r'工程师', 'title', 'eq', None),
+        (r'副教授', 'title', 'eq', None),
+        (r'(?<!副)教授', 'title', 'eq', None),
+        (r'讲师', 'title', 'eq', None),
+        (r'(?<!高级)(?<!助理)工程师', 'title', 'eq', None),
         (r'研究员', 'title', 'eq', None),
-        # Overseas
-        (r'(?:有)?海外经历', 'overseas_experience', 'eq', lambda m: 'true'),
-        (r'无海外经历', 'overseas_experience', 'eq', lambda m: 'false'),
+        # Overseas — catches "海外经历", "有海外经历", and "留学经历"
+        # (e.g. "有美利坚留学经历", "德国留学经历")
+        (r'(?:有)?(?:海外|留学)经历', 'overseas_experience', 'eq', lambda m: 'true'),
+        (r'无(?:海外|留学)经历', 'overseas_experience', 'eq', lambda m: 'false'),
         # Country — handled separately below (supports "美国或德国留学")
         # Award level
         (r'省级以上奖励', 'highest_award_level', 'gte', lambda m: '省级'),
@@ -287,19 +472,26 @@ def parse_with_rules(user_query: str, global_schema) -> Optional[dict]:
             if value:
                 filters.append({'field': field, 'op': op, 'value': value})
 
-    # Multi-country extraction: supports "美国或德国留学", "美国和英国留学经历" etc.
-    # The pattern match above only catches a single country directly before/after "留学".
-    # Here we find ALL country names in the query when "留学" is present.
+    # Multi-country extraction: supports "美国或德国留学", "美国和英国留学经历",
+    # "有美利坚留学经历" etc.  Also maps common aliases to canonical country names.
     if '留学' in user_query:
-        country_matches = re.findall(r'([美英德日澳]国|澳大利亚)', user_query)
+        _COUNTRY_ALIASES = {
+            '美利坚': '美国', '英格兰': '英国', '德意志': '德国',
+            '澳洲': '澳大利亚',
+        }
+        # Match standard X国 patterns + known aliases
+        country_matches = re.findall(
+            r'(美利坚|英格兰|德意志|澳洲|[美英德日澳]国|澳大利亚)', user_query
+        )
         if country_matches:
-            # Remove duplicates while preserving order
+            # Remove duplicates while preserving order, map aliases to canonical
             seen = set()
             countries = []
             for c in country_matches:
-                if c not in seen:
-                    seen.add(c)
-                    countries.append(c)
+                canonical = _COUNTRY_ALIASES.get(c, c)
+                if canonical not in seen:
+                    seen.add(canonical)
+                    countries.append(canonical)
             if len(countries) == 1:
                 filters.append({'field': 'country_of_study', 'op': 'eq', 'value': countries[0]})
             else:
@@ -307,27 +499,31 @@ def parse_with_rules(user_query: str, global_schema) -> Optional[dict]:
 
     # Determine aggregation
     agg = None
+    # Use module-level _SALARY_TERMS / _SALARY_NON_SUBSIDY to stay in sync
+    # with mapping.yaml aliases and avoid omissions (e.g. "工资" was missing).
     agg_patterns = [
-        (r'平均(?:的)?(月收入|月工资|收入|年终奖|奖金|补贴|津贴)', 'avg'),
-        (r'(月收入|月工资|收入|年终奖|奖金|补贴|津贴)(?:的)?平均', 'avg'),
-        (r'(月收入|月工资|收入|年终奖|奖金|补贴|津贴)(?:的)?最高', 'max'),
-        (r'最高(?:的)?(月收入|月工资|收入|年终奖|奖金|补贴|津贴)', 'max'),
-        (r'(月收入|月工资|收入|年终奖|奖金|补贴|津贴)(?:的)?最低', 'min'),
-        (r'最低(?:的)?(月收入|月工资|收入|年终奖|奖金|补贴|津贴)', 'min'),
+        (fr'平均(?:的)?({_SALARY_TERMS})', 'avg'),
+        (fr'({_SALARY_TERMS})(?:的)?平均', 'avg'),
+        (fr'({_SALARY_TERMS})(?:的)?最高', 'max'),
+        (fr'最高(?:的)?({_SALARY_TERMS})', 'max'),
+        (fr'({_SALARY_TERMS})(?:的)?最低', 'min'),
+        (fr'最低(?:的)?({_SALARY_TERMS})', 'min'),
         (r'总(?:的)?(补贴|津贴)(?:金额)?', 'sum'),
-        (r'总(?:的)?(月收入|月工资|收入|年终奖|奖金)(?:金额)?', 'sum'),
+        (fr'总(?:的)?({_SALARY_NON_SUBSIDY})(?:金额)?', 'sum'),
         (r'(总工资|总收入|工资|收入)支出', 'sum'),
         (r'总额', 'sum'),
         (r'(?:人员|的)?(人数|数量)', 'count'),
         (r'多少(?:个)?人', 'count'),
+        (r'有多少', 'count'),
         (r'计数', 'count'),
     ]
 
     agg_field_map = {
         '月收入': 'monthly_salary', '月工资': 'monthly_salary', '收入': 'monthly_salary',
+        '工资': 'monthly_salary', '月薪': 'monthly_salary', '薪水': 'monthly_salary',
         '年终奖': 'year_end_bonus', '奖金': 'year_end_bonus',
         '补贴': 'allowance', '津贴': 'allowance',
-        '总工资': 'monthly_salary', '总收入': 'monthly_salary', '工资': 'monthly_salary',
+        '总工资': 'monthly_salary', '总收入': 'monthly_salary',
         '人数': 'person_token', '数量': 'person_token',
     }
 
@@ -339,18 +535,53 @@ def parse_with_rules(user_query: str, global_schema) -> Optional[dict]:
             agg = {'field': field, 'func': func}
             break
 
-    # Clean up conflicts
-    seen_fields = {}
-    deduped = []
+    # Clean up conflicts: deduplicate exact duplicates, merge same-field eq's
+    # into 'in', and keep broader operators over narrower ones.
+    #
+    # Operator specificity: in > gte/lte > gt/lt > eq > neq
+    OP_PRIORITY = {'in': 4, 'gte': 3, 'lte': 3, 'gt': 2, 'lt': 2, 'eq': 1, 'neq': 0}
+
+    seen_fields: dict[str, dict] = {}   # field -> canonical filter entry
+    deduped: list[dict] = []
+
     for f in filters:
         key = f['field']
         if key in seen_fields:
-            # Keep more specific (gte over eq, etc.)
             existing = seen_fields[key]
-            if f['op'] == 'gte' and existing['op'] == 'eq':
+
+            # ── Same operator ──
+            if f['op'] == existing['op']:
+                if f['value'] == existing['value']:
+                    continue  # exact duplicate → skip
+                # Different values under same op → merge into 'in'
+                if existing['op'] == 'eq':
+                    existing['op'] = 'in'
+                    existing['value'] = [existing['value'], f['value']]
+                elif existing['op'] == 'in' and isinstance(existing['value'], list):
+                    if f['value'] not in existing['value']:
+                        existing['value'].append(f['value'])
+                # For range ops (gte/lte/gt/lt), keep the broader bound:
+                # gte: lower value = wider range; lte: higher value = wider range
+                elif existing['op'] in ('gte', 'gt'):
+                    if f['value'] < existing['value']:
+                        deduped.remove(existing)
+                        deduped.append(f)
+                        seen_fields[key] = f
+                elif existing['op'] in ('lte', 'lt'):
+                    if f['value'] > existing['value']:
+                        deduped.remove(existing)
+                        deduped.append(f)
+                        seen_fields[key] = f
+                continue
+
+            # ── Different operators → keep the one with higher priority ──
+            f_pri = OP_PRIORITY.get(f['op'], 0)
+            ex_pri = OP_PRIORITY.get(existing['op'], 0)
+            if f_pri > ex_pri:
                 deduped.remove(existing)
                 deduped.append(f)
                 seen_fields[key] = f
+            # f_pri <= ex_pri → keep existing, discard f
         else:
             deduped.append(f)
             seen_fields[key] = f

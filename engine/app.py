@@ -160,7 +160,7 @@ def _should_debug_sql() -> bool:
     return os.environ.get('DEBUG_SQL', '').lower() in ('true', '1', 'yes')
 
 
-def _build_logical_display_sql(predicates: list[dict], stype: str = 'filter', agg_field: str = None) -> str:
+def _build_logical_display_sql(predicates: list[dict], stype: str = 'filter', agg_field: str = None, agg_func: str = None) -> str:
     """Build a simulated SQL statement using only logical field names from mapping.yaml.
 
     Uses logical field names (e.g. person_token, research_field) and table names
@@ -198,7 +198,9 @@ def _build_logical_display_sql(predicates: list[dict], stype: str = 'filter', ag
             return f"SELECT {token_display} FROM {table_name}"
 
     elif stype == 'aggregate':
-        return f"SELECT {token_display}, {agg_field or '?'} FROM {table_name}"
+        func_display = {'avg': 'AVG', 'sum': 'SUM', 'count': 'COUNT', 'min': 'MIN', 'max': 'MAX'}
+        sql_func = func_display.get(agg_func or '', agg_func.upper() if agg_func else 'AVG')
+        return f"SELECT {sql_func}({agg_field or '?'}) FROM {table_name} WHERE {token_display} IN (...)"
 
     return ''
 
@@ -208,6 +210,18 @@ def _build_logical_display_sql(predicates: list[dict], stype: str = 'filter', ag
 @app.get("/health")
 async def health():
     return {"status": "ok", "worker_id": worker_id}
+
+
+@app.post("/explain")
+async def explain(req: dict):
+    """Return display SQL without executing the query — used for SQL preview in the frontend."""
+    stype = req.get('type', 'filter')
+    predicates = req.get('predicates', [])
+    agg_field = req.get('agg_field')
+    agg_func = req.get('agg_func')
+
+    display_sql = _build_logical_display_sql(predicates, stype, agg_field=agg_field, agg_func=agg_func)
+    return {"sql": display_sql, "display_sql": display_sql}
 
 
 @app.post("/count")
@@ -271,9 +285,8 @@ async def filter_endpoint(req: dict):
     display_sql = _build_logical_display_sql(predicates, 'filter')
 
     logger.info(f"Response: {len(tokens)} tokens")
-    response = {"tokens": tokens, "count": len(tokens), "sql": display_sql}
+    response = {"tokens": tokens, "count": len(tokens), "sql": display_sql, "display_sql": display_sql}
     if _should_debug_sql():
-        response["display_sql"] = display_sql
         response["physical_sql"] = sql
         response["params"] = list(where_params)
     return egress_check(response)
@@ -289,7 +302,7 @@ async def aggregate(req: dict):
     Returns ONLY scalar (sum, count) — never row-level data.
     """
     tokens = req.get('tokens', [])
-    agg_field = req.get('agg_field', 'monthly_income')
+    agg_field = req.get('agg_field', 'monthly_salary')
     agg_func = req.get('agg_func', 'avg')
 
     logger.info(f"POST /aggregate - {len(tokens)} tokens, field={agg_field}, func={agg_func}")
@@ -302,7 +315,7 @@ async def aggregate(req: dict):
     sql, params, db_side_hmac = build_aggregate_query(tokens, agg_field, agg_func)
 
     # Build logical display SQL (all logical field names, no real column names)
-    display_sql = _build_logical_display_sql([], 'aggregate', agg_field=agg_field)
+    display_sql = _build_logical_display_sql([], 'aggregate', agg_field=agg_field, agg_func=agg_func)
 
     try:
         rows = execute_query(sql, params)
@@ -369,7 +382,7 @@ async def aggregate(req: dict):
     elif agg_func == 'max':
         result_val = total_max
     elif agg_func == 'avg':
-        # Use non_zero_count for sparse fields like annual_bonus (only non-zero in Dec).
+        # Use non_zero_count for sparse fields like year_end_bonus (only non-zero in Dec).
         # Falls back to total_count when all values are genuinely zero.
         divisor = non_zero_count if non_zero_count > 0 else total_count
         result_val = total_sum / divisor if divisor > 0 else 0
@@ -385,8 +398,8 @@ async def aggregate(req: dict):
         "value": result_val,
         "func": agg_func,
         "sql": display_sql,
+        "display_sql": display_sql,
     }
     if _should_debug_sql():
-        response["display_sql"] = display_sql
         response["physical_sql"] = sql
     return egress_check(response)
